@@ -89,11 +89,14 @@
   document.getElementById('btnBack').addEventListener('click', function () { showScreen('home'); });
   document.getElementById('btnBackSettings').addEventListener('click', function () { showScreen('home'); });
 
-  // home toast (created dynamically)
+  // home toast (created dynamically). It must live on document.body, not
+  // inside the home screen: a toast shown while the user is in Settings (or
+  // the viewer) would otherwise be invisible, because its parent screen is
+  // hidden — that is why tapping "تحقق" in Settings seemed to do nothing.
   var homeToast = document.createElement('div');
   homeToast.className = 'info-bar';
   homeToast.style.cssText = 'position:fixed;bottom:90px;right:12px;left:12px;z-index:30;display:none;';
-  document.getElementById('screenHome').appendChild(homeToast);
+  document.body.appendChild(homeToast);
   var homeToastTimer = null;
   function showHomeToast(msg) {
     homeToast.textContent = msg;
@@ -868,7 +871,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.3.1', code: 5 };
+  var APP_VERSION = { version: '1.3.2', code: 6 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -879,7 +882,7 @@
   }
   function checkForUpdates(manual) {
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 9000);
+    var timer = setTimeout(function () { controller.abort(); }, 20000);
     fetch(UPDATE_API, { signal: controller.signal, headers: { 'Accept': 'application/vnd.github+json' } })
       .then(function (res) {
         clearTimeout(timer);
@@ -897,6 +900,9 @@
           document.getElementById('updateText').textContent =
             'يوجد تحديث جديد ' + (rel.tag_name || '') + ' — حمّله وثبّته من هنا';
           document.getElementById('updateBanner').classList.remove('hidden');
+          // the banner lives on the home screen — also announce it with a
+          // toast so the user sees it even while in Settings or the viewer
+          showHomeToast('يوجد تحديث جديد ' + (rel.tag_name || '') + ' — ارجع للرئيسية وحمّله ⬇️');
         } else if (manual) {
           showHomeToast('إنت على أحدث إصدار ✓ (' + APP_VERSION.version + ')');
         }
