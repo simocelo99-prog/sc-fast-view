@@ -434,6 +434,27 @@
       skipped: ctx.skipped,
       unknownEntityCount: stats ? stats.unknownEntityCount || 0 : 0
     };
+    // Saved view: the *Active VPORT holds the view AutoCAD had when the file
+    // was saved (VIEWCTR + VIEWSIZE). That is the framing the file's author
+    // saw — usually the plan filling the screen — while the raw bounds span
+    // far-out junk. app.js uses it as the initial view when it is sane.
+    try {
+      var vports = (db.tables && db.tables.VPORT && db.tables.VPORT.entries) || [];
+      var active = null;
+      vports.forEach(function (v) {
+        if (!active && v.name === '*Active') active = v;
+      });
+      if (!active && vports.length) active = vports[0];
+      if (active && active.center && isFinite(active.center.x) && isFinite(active.center.y)
+        && isFinite(active.viewHeight) && active.viewHeight > 0) {
+        var aspect = (isFinite(active.aspectRatio) && active.aspectRatio > 0)
+          ? active.aspectRatio : 0;
+        doc.savedView = {
+          cx: active.center.x, cy: active.center.y,
+          height: active.viewHeight, aspect: aspect
+        };
+      }
+    } catch (e) { /* no saved view — app.js falls back to the density fit */ }
     return doc;
   }
 
