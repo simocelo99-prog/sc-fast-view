@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,3 +40,14 @@ jobs:
           name: sc-fast-view-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release (for in-app updates)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CODE=$(jq -r .code www/version.json)
+          VER=$(jq -r .version www/version.json)
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          cp "$APK" SC-Fast-View.apk
+          gh release create "v$CODE" --title "SC Fast View v$VER" --notes "تحديث تلقائي — حمّل SC-Fast-View.apk وثبّته من موبايلك." SC-Fast-View.apk \
+            || gh release upload "v$CODE" SC-Fast-View.apk --clobber

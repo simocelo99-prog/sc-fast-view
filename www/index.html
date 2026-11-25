@@ -22,6 +22,11 @@
     <button class="tab" data-tab="drawings">الرسومات</button>
   </nav>
 
+  <div class="update-banner hidden" id="updateBanner">
+    <span id="updateText">يوجد تحديث جديد</span>
+    <button class="update-btn" id="btnUpdate">تحديث ⬇️</button>
+  </div>
+
   <main class="file-list" id="fileList"></main>
 
   <div class="home-empty" id="homeEmpty">
@@ -117,6 +122,25 @@
         <input type="checkbox" id="optFastRender" checked>
         <span class="slider"></span>
       </label>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-text">
+        <div class="setting-label">ملاءمة للرسم كامل</div>
+        <div class="setting-sub">يشمل النقاط البعيدة عن الرسمة — الرسمة هتبان أصغر</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="optFitAll">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-text">
+        <div class="setting-label" id="versionLabel">الإصدار الحالي: 1.3.0</div>
+        <div class="setting-sub">التطبيق بيتحقق من التحديثات لوحده، أو دوس هنا</div>
+      </div>
+      <button class="check-btn" id="btnCheckUpdate">تحقق 🔄</button>
     </div>
 
     <div class="setting-row">

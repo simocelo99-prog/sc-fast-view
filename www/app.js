@@ -17,12 +17,13 @@
   var dpr = Math.max(1, window.devicePixelRatio || 1);
 
   // ---------- settings (persisted) ----------
-  var settings = { bg: 'black', lineweight: false, fastRender: true };
+  var settings = { bg: 'black', lineweight: false, fastRender: true, fitAll: false };
   try {
     var saved = JSON.parse(localStorage.getItem('scfv-settings') || '{}');
     if (saved.bg) settings.bg = saved.bg;
     if (typeof saved.lineweight === 'boolean') settings.lineweight = saved.lineweight;
     if (typeof saved.fastRender === 'boolean') settings.fastRender = saved.fastRender;
+    if (typeof saved.fitAll === 'boolean') settings.fitAll = saved.fitAll;
   } catch (e) { /* ignore */ }
   function saveSettings() {
     try { localStorage.setItem('scfv-settings', JSON.stringify(settings)); } catch (e) { /* ignore */ }
@@ -119,9 +120,51 @@
   function s2wx(px) { return (px / dpr - state.ox) / state.scale; }
   function s2wy(py) { return -(py / dpr - state.oy) / state.scale; }
 
+  // Fit the main drawing, ignoring a few far-out stray points that would
+  // otherwise shrink the plan into a corner (common in real DWG files).
+  function collectFitPoints() {
+    var xs = [], ys = [];
+    function pt(x, y) {
+      if (!isFinite(x) || !isFinite(y)) return;
+      xs.push(x); ys.push(y);
+    }
+    function walk(g) {
+      if (!g) return;
+      if (g.type === 'line') { pt(g.x1, g.y1); pt(g.x2, g.y2); }
+      else if (g.type === 'polyline') {
+        var step = g.points.length > 200 ? Math.ceil(g.points.length / 200) : 1;
+        for (var k = 0; k < g.points.length; k += step) pt(g.points[k][0], g.points[k][1]);
+      }
+      else if (g.type === 'circle') { pt(g.cx - g.r, g.cy - g.r); pt(g.cx + g.r, g.cy + g.r); }
+      else if (g.type === 'text' || g.type === 'point') pt(g.x, g.y);
+      else if (g.type === 'group') g.items.forEach(walk);
+    }
+    state.doc.entities.forEach(walk);
+    return { xs: xs, ys: ys };
+  }
+  function percentile(sorted, p) {
+    if (!sorted.length) return 0;
+    var idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * sorted.length)));
+    return sorted[idx];
+  }
+  function fitBounds() {
+    var b = state.doc.bounds;
+    if (settings.fitAll) return b;
+    var pts = collectFitPoints();
+    if (pts.xs.length < 20) return b;
+    pts.xs.sort(function (a, c) { return a - c; });
+    pts.ys.sort(function (a, c) { return a - c; });
+    var x0 = percentile(pts.xs, 0.005), x1 = percentile(pts.xs, 0.995);
+    var y0 = percentile(pts.ys, 0.005), y1 = percentile(pts.ys, 0.995);
+    if (!(x1 > x0) || !(y1 > y0)) return b;
+    // guard: if the clipped range is absurdly small vs full bounds, fall back
+    if ((x1 - x0) < (b.maxX - b.minX) * 0.01 || (y1 - y0) < (b.maxY - b.minY) * 0.01) return b;
+    return { minX: x0, minY: y0, maxX: x1, maxY: y1 };
+  }
+
   function fitView() {
     if (!state.doc) return;
-    var b = state.doc.bounds;
+    var b = fitBounds();
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
     var bw = Math.max(b.maxX - b.minX, 0.001);
@@ -719,6 +762,8 @@
     });
     document.getElementById('optLineweight').checked = settings.lineweight;
     document.getElementById('optFastRender').checked = settings.fastRender;
+    document.getElementById('optFitAll').checked = settings.fitAll;
+    document.getElementById('versionLabel').textContent = 'الإصدار الحالي: ' + APP_VERSION.version;
   }
   document.querySelectorAll('#bgChoices .bg-choice').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -739,6 +784,11 @@
     saveSettings();
     render();
   });
+  document.getElementById('optFitAll').addEventListener('change', function (ev) {
+    settings.fitAll = ev.target.checked;
+    saveSettings();
+    if (state.doc) fitView();
+  });
   document.getElementById('btnTheme').addEventListener('click', function () {
     settings.bg = settings.bg === 'black' ? 'white' : settings.bg === 'white' ? 'beige' : 'black';
     saveSettings();
@@ -747,8 +797,57 @@
     render();
   });
 
+  // ---------- in-app updates ----------
+  // The app checks GitHub Releases for a newer version and offers a one-tap
+  // download from inside the app. The repo must be public for the check to
+  // work without a login. Keep APP_VERSION in sync with www/version.json.
+  var APP_VERSION = { version: '1.3.0', code: 4 };
+  var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
+  var pendingUpdateUrl = '';
+
+  function parseReleaseCode(tag) {
+    if (!tag) return 0;
+    var m = String(tag).match(/v?(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  function checkForUpdates(manual) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 9000);
+    fetch(UPDATE_API, { signal: controller.signal, headers: { 'Accept': 'application/vnd.github+json' } })
+      .then(function (res) {
+        clearTimeout(timer);
+        if (!res.ok) throw new Error('no release');
+        return res.json();
+      })
+      .then(function (rel) {
+        var code = parseReleaseCode(rel.tag_name);
+        if (code > APP_VERSION.code) {
+          var apk = null;
+          (rel.assets || []).forEach(function (a) {
+            if (/\.apk$/i.test(a.name)) apk = a;
+          });
+          pendingUpdateUrl = apk ? apk.browser_download_url : rel.html_url;
+          document.getElementById('updateText').textContent =
+            'يوجد تحديث جديد ' + (rel.tag_name || '') + ' — حمّله وثبّته من هنا';
+          document.getElementById('updateBanner').classList.remove('hidden');
+        } else if (manual) {
+          showHomeToast('إنت على أحدث إصدار ✓ (' + APP_VERSION.version + ')');
+        }
+      })
+      .catch(function () {
+        if (manual) showHomeToast('تعذّر التحقق من التحديثات — اتأكد من النت وحاول تاني');
+      });
+  }
+  document.getElementById('btnUpdate').addEventListener('click', function () {
+    if (pendingUpdateUrl) window.open(pendingUpdateUrl, '_blank');
+  });
+  document.getElementById('btnCheckUpdate').addEventListener('click', function () {
+    checkForUpdates(true);
+  });
+
   // ---------- init ----------
   applySettingsUI();
   openDB().then(function () { loadLibrary(); });
   showScreen('home');
+  checkForUpdates(false);
 })();
