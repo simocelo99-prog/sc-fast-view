@@ -232,9 +232,26 @@
     return { minX: rx0, minY: ry0, maxX: rx1, maxY: ry1 };
   }
 
+  // Saved view from the DWG file (*Active VPORT): the framing AutoCAD had
+  // when the file was saved — usually the plan filling the screen. Used as
+  // the initial view when it is sane; otherwise the density fit takes over.
+  function savedViewBounds() {
+    var sv = state.doc && state.doc.savedView;
+    if (!sv || !isFinite(sv.cx) || !isFinite(sv.cy) || !isFinite(sv.height) || !(sv.height > 0)) return null;
+    var r = canvas.parentElement.getBoundingClientRect();
+    var aspect = (sv.aspect && isFinite(sv.aspect) && sv.aspect > 0)
+      ? sv.aspect : (r.width > 2 && r.height > 2 ? r.width / r.height : 1);
+    var w = sv.height * aspect, h = sv.height;
+    var box = { minX: sv.cx - w / 2, maxX: sv.cx + w / 2, minY: sv.cy - h / 2, maxY: sv.cy + h / 2 };
+    var b = state.doc.bounds;
+    // sanity: the saved view must overlap the drawing at all
+    if (box.maxX < b.minX || box.minX > b.maxX || box.maxY < b.minY || box.minY > b.maxY) return null;
+    return box;
+  }
+
   function fitView() {
     if (!state.doc) return;
-    var b = fitBounds();
+    var b = (!settings.fitAll && savedViewBounds()) || fitBounds();
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
     var bw = Math.max(b.maxX - b.minX, 0.001);
@@ -871,7 +888,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.3.2', code: 6 };
+  var APP_VERSION = { version: '1.3.3', code: 7 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
