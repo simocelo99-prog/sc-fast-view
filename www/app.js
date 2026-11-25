@@ -281,28 +281,47 @@
   }
 
   // ---------- file loading ----------
+  // Shared display path for any parsed doc (DXF or DWG).
+  function loadDoc(doc, name, opts) {
+    opts = opts || {};
+    state.doc = doc;
+    state.fileName = name || 'رسم بدون اسم';
+    state.hiddenLayers = {};
+    state.measurePts = [];
+    state.measureTotal = 0;
+    state.selected = null;
+    fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
+    buildLayersPanel();
+    showScreen('viewer');
+    requestAnimationFrame(function () {
+      resize();
+      fitView();
+      if (opts.save !== false) saveToLibrary(name, opts.saveData, opts.size || 0, opts.isDwg);
+    });
+    showInfo('اتفتح ' + state.fileName + ' ✓');
+  }
+
   function loadDXF(text, name, opts) {
     opts = opts || {};
     try {
       var doc = DXF.parse(text);
-      state.doc = doc;
-      state.fileName = name || 'رسم بدون اسم';
-      state.hiddenLayers = {};
-      state.measurePts = [];
-      state.measureTotal = 0;
-      state.selected = null;
-      fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
-      buildLayersPanel();
-      showScreen('viewer');
-      requestAnimationFrame(function () {
-        resize();
-        fitView();
-        if (opts.save !== false) saveToLibrary(name, text, opts.size || text.length);
-      });
-      showInfo('اتفتح ' + state.fileName + ' ✓');
+      loadDoc(doc, name, { save: opts.save, size: opts.size || text.length, saveData: text, isDwg: false });
     } catch (err) {
       showHomeToast('الملف ده مش DXF صحيح — جرّب ملف تاني');
     }
+  }
+
+  function loadDWG(arrayBuffer, name, opts) {
+    opts = opts || {};
+    showHomeToast('جارٍ فتح ملف DWG…');
+    DWG.open(arrayBuffer).then(function (doc) {
+      loadDoc(doc, name, { save: opts.save, size: opts.size || arrayBuffer.byteLength, saveData: arrayBuffer, isDwg: true });
+      if (doc.dwgStats && doc.dwgStats.skipped && Object.keys(doc.dwgStats.skipped).length) {
+        showInfo('اتفتح ' + name + ' ✓ — بعض العناصر (أبعاد، تظليل…) مش مدعومة ومتعرضتش');
+      }
+    }).catch(function (err) {
+      showHomeToast('مش قادر أفتح ملف DWG ده — ' + (err && err.message ? err.message : 'ملف تالف أو نسخة غير مدعومة'));
+    });
   }
 
   function makeThumbnail() {
@@ -321,13 +340,14 @@
 
   function handlePickedFile(f) {
     if (!f) return;
-    if (/\.dwg$/i.test(f.name)) {
-      showHomeToast('ملف DWG لازم يتحول DXF الأول — من أوتوكاد: Save As ← DXF، وبعدها افتحه هنا');
-      return;
-    }
     var reader = new FileReader();
-    reader.onload = function () { loadDXF(String(reader.result), f.name, { size: f.size }); };
-    reader.readAsText(f);
+    if (/\.dwg$/i.test(f.name)) {
+      reader.onload = function () { loadDWG(reader.result, f.name, { size: f.size }); };
+      reader.readAsArrayBuffer(f);
+    } else {
+      reader.onload = function () { loadDXF(String(reader.result), f.name, { size: f.size }); };
+      reader.readAsText(f);
+    }
     fileInput.value = '';
   }
 
@@ -360,7 +380,8 @@
       req.onerror = function () { resolve(false); };
     });
   }
-  function saveToLibrary(name, text, size) {
+  // data: DXF text (string) or DWG raw bytes (ArrayBuffer). isDwg flags which.
+  function saveToLibrary(name, data, size, isDwg) {
     if (!idb || !name) return;
     try {
       var tx = idb.transaction('files', 'readwrite');
@@ -368,11 +389,14 @@
       var getReq = store.get(name);
       getReq.onsuccess = function () {
         var prev = getReq.result || {};
-        store.put({
-          name: name, text: text, size: size || text.length,
+        var rec = {
+          name: name, size: size || 0,
           time: Date.now(), thumb: makeThumbnail(),
-          favorite: !!prev.favorite, isDemo: name.indexOf('تجريبية') !== -1
-        });
+          favorite: !!prev.favorite, isDemo: name.indexOf('تجريبية') !== -1,
+          isDwg: !!isDwg
+        };
+        if (isDwg) rec.data = data; else rec.text = data;
+        store.put(rec);
         loadLibrary();
       };
     } catch (e) { /* ignore */ }
@@ -432,6 +456,11 @@
         if (ev.target.getAttribute('data-star')) {
           ev.stopPropagation();
           toggleFavorite(rec.name);
+          return;
+        }
+        if (rec.isDwg) {
+          if (!rec.data) { showHomeToast('الملف ده مش متخزن — افتحه تاني من موبايلك'); return; }
+          loadDWG(rec.data, rec.name, { save: false });
           return;
         }
         if (!rec.text) { showHomeToast('الملف ده مش متخزن — افتحه تاني من موبايلك'); return; }
