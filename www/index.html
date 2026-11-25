@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d1b2e">
+<title>SC Fast View — عارض رسومات DXF</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">SC <span>Fast View</span></div>
+  <div class="filename" id="fileName">مفيش ملف مفتوح</div>
+  <button class="icon-btn" id="btnTheme" title="فاتح / غامق">🌙</button>
+</header>
+
+<main class="stage" id="stage">
+  <canvas id="canvas"></canvas>
+
+  <div class="empty-state" id="emptyState">
+    <div class="empty-card">
+      <div class="empty-logo">SC Fast View</div>
+      <p class="empty-sub">عارض رسومات سريع — من غير إعلانات</p>
+      <button class="big-btn" id="btnOpen">📂 افتح ملف DXF</button>
+      <button class="big-btn ghost" id="btnDemo">🏠 جرّب الرسمة التجريبية</button>
+      <div class="dwg-note">
+        <b>ملفات DWG؟</b>
+        التطبيق بيفتح <b>DXF</b> مباشرة. ملف DWG لازم يتحول DXF الأول — خطوة واحدة مجانية:
+        من أوتوكاد: <b>Save As ← DXF</b>، أو أي محوّل مجاني DWG to DXF، وبعدها افتحه هنا.
+      </div>
+      <div class="recent-box hidden" id="recentBox">
+        <div class="recent-title">آخر الملفات</div>
+        <div id="recentList"></div>
+      </div>
+      <p class="install-hint">💡 عشان يبقى زي التطبيق على موبايلك: من كروم ← القائمة ⋮ ← <b>إضافة إلى الشاشة الرئيسية</b></p>
+    </div>
+  </div>
+
+  <div class="info-bar hidden" id="infoBar"></div>
+  <div class="measure-label" id="measureLabel"></div>
+</main>
+
+<div class="layers-sheet" id="layersSheet">
+  <div class="sheet-head">
+    <span>الطبقات</span>
+    <button class="icon-btn" id="btnCloseLayers">✕</button>
+  </div>
+  <div id="layersList"></div>
+</div>
+
+<footer class="toolbar">
+  <button class="tool-btn" id="btnDemo2">🏠 تجريبي</button>
+  <button class="tool-btn" id="btnLayers">🧱 الطبقات</button>
+  <button class="tool-btn" id="btnMeasure">📏 قياس</button>
+  <button class="tool-btn hidden" id="btnClearMeasure">🗑️ مسح القياس</button>
+  <button class="tool-btn" id="btnFit">⛶ ملاءمة</button>
+  <button class="tool-btn" id="btnZoomOut">−</button>
+  <button class="tool-btn" id="btnZoomIn">+</button>
+</footer>
+
+<input type="file" id="fileInput" accept=".dxf" hidden>
+<script src="dxf.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
