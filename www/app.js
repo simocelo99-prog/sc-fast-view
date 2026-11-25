@@ -1,4 +1,4 @@
-/* SC Fast View — canvas renderer + interactions.
+/* SC Fast View — CAD viewer with a DWG FastView-style home screen.
    Depends on DXF (www/dxf.js). Plain script, no build step. */
 (function () {
   'use strict';
@@ -10,25 +10,50 @@
   var infoBar = document.getElementById('infoBar');
   var layersSheet = document.getElementById('layersSheet');
   var layersList = document.getElementById('layersList');
-  var emptyState = document.getElementById('emptyState');
   var measureLabel = document.getElementById('measureLabel');
+  var fileListEl = document.getElementById('fileList');
+  var homeEmptyEl = document.getElementById('homeEmpty');
+
+  var dpr = Math.max(1, window.devicePixelRatio || 1);
+
+  // ---------- settings (persisted) ----------
+  var settings = { bg: 'black', lineweight: false, fastRender: true };
+  try {
+    var saved = JSON.parse(localStorage.getItem('scfv-settings') || '{}');
+    if (saved.bg) settings.bg = saved.bg;
+    if (typeof saved.lineweight === 'boolean') settings.lineweight = saved.lineweight;
+    if (typeof saved.fastRender === 'boolean') settings.fastRender = saved.fastRender;
+  } catch (e) { /* ignore */ }
+  function saveSettings() {
+    try { localStorage.setItem('scfv-settings', JSON.stringify(settings)); } catch (e) { /* ignore */ }
+  }
 
   var state = {
     doc: null,
     fileName: '',
     scale: 1, ox: 0, oy: 0,
-    darkBg: true,
     hiddenLayers: {},
     measureMode: false,
     measurePts: [],
     measureTotal: 0,
-    selected: null
+    selected: null,
+    screen: 'home',
+    tab: 'recent',
+    library: []
   };
 
-  var dpr = Math.max(1, window.devicePixelRatio || 1);
+  function isDarkBg() { return settings.bg === 'black'; }
+  function bgColor() {
+    return settings.bg === 'white' ? '#FFFFFF'
+      : settings.bg === 'beige' ? '#F5EEDD' : '#121212';
+  }
+  function fgColor() { return isDarkBg() ? '#FFFFFF' : '#000000'; }
+  function gridColor() { return isDarkBg() ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'; }
+  function lineWidth() { return (settings.lineweight ? 2.4 : 1.1) * dpr; }
 
   function resize() {
     var r = canvas.parentElement.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
     canvas.width = Math.max(1, Math.round(r.width * dpr));
     canvas.height = Math.max(1, Math.round(r.height * dpr));
     canvas.style.width = r.width + 'px';
@@ -37,17 +62,52 @@
   }
   window.addEventListener('resize', resize);
 
-  // ---------- color resolution ----------
-  function fgColor() { return state.darkBg ? '#FFFFFF' : '#000000'; }
-  function bgColor() { return state.darkBg ? '#121212' : '#FFFFFF'; }
-  function gridColor() { return state.darkBg ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'; }
+  // ---------- screens ----------
+  function showScreen(name) {
+    state.screen = name;
+    document.getElementById('screenHome').classList.toggle('hidden', name !== 'home');
+    document.getElementById('screenViewer').classList.toggle('hidden', name !== 'viewer');
+    document.getElementById('screenSettings').classList.toggle('hidden', name !== 'settings');
+    document.querySelectorAll('.nav-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-nav') === name);
+    });
+    if (name === 'viewer') requestAnimationFrame(resize);
+    if (name === 'home') renderLibrary();
+  }
 
+  document.querySelectorAll('.nav-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var target = b.getAttribute('data-nav');
+      if (target === 'viewer' && !state.doc) {
+        showHomeToast('افتح ملف من الرئيسية الأول، أو جرّب الرسمة التجريبية');
+        return;
+      }
+      showScreen(target);
+    });
+  });
+  document.getElementById('btnBack').addEventListener('click', function () { showScreen('home'); });
+  document.getElementById('btnBackSettings').addEventListener('click', function () { showScreen('home'); });
+
+  // home toast (created dynamically)
+  var homeToast = document.createElement('div');
+  homeToast.className = 'info-bar';
+  homeToast.style.cssText = 'position:fixed;bottom:90px;right:12px;left:12px;z-index:30;display:none;';
+  document.getElementById('screenHome').appendChild(homeToast);
+  var homeToastTimer = null;
+  function showHomeToast(msg) {
+    homeToast.textContent = msg;
+    homeToast.style.display = 'block';
+    clearTimeout(homeToastTimer);
+    homeToastTimer = setTimeout(function () { homeToast.style.display = 'none'; }, 4500);
+  }
+
+  // ---------- color resolution ----------
   function resolveColor(ent) {
-    var c = DXF.aciColor(ent.color, state.darkBg);
+    var c = DXF.aciColor(ent.color, isDarkBg());
     if (c) return c;
     var layer = state.doc && state.doc.layerMap ? state.doc.layerMap[ent.layer] : null;
     if (layer) {
-      var lc = DXF.aciColor(layer.color, state.darkBg);
+      var lc = DXF.aciColor(layer.color, isDarkBg());
       if (lc) return lc;
     }
     return fgColor();
@@ -63,6 +123,7 @@
     if (!state.doc) return;
     var b = state.doc.bounds;
     var r = canvas.parentElement.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
     var bw = Math.max(b.maxX - b.minX, 0.001);
     var bh = Math.max(b.maxY - b.minY, 0.001);
     state.scale = Math.min(r.width / bw, r.height / bh) * 0.92;
@@ -70,6 +131,34 @@
     state.ox = r.width / 2 - cx * state.scale;
     state.oy = r.height / 2 + cy * state.scale;
     render();
+  }
+
+  // ---------- viewport culling (fast render for big files) ----------
+  function entityVisible(g, x0, y0, x1, y1) {
+    if (g.type === 'line') {
+      return !(Math.max(g.x1, g.x2) < x0 || Math.min(g.x1, g.x2) > x1 ||
+               Math.max(g.y1, g.y2) < y0 || Math.min(g.y1, g.y2) > y1);
+    }
+    if (g.type === 'polyline') {
+      for (var k = 0; k < g.points.length; k++) {
+        if (g.points[k][0] >= x0 && g.points[k][0] <= x1 &&
+            g.points[k][1] >= y0 && g.points[k][1] <= y1) return true;
+      }
+      return false;
+    }
+    if (g.type === 'circle') {
+      return g.cx + g.r >= x0 && g.cx - g.r <= x1 && g.cy + g.r >= y0 && g.cy - g.r <= y1;
+    }
+    if (g.type === 'text' || g.type === 'point') {
+      return g.x >= x0 && g.x <= x1 && g.y >= y0 && g.y <= y1;
+    }
+    if (g.type === 'group') {
+      for (var i = 0; i < g.items.length; i++) {
+        if (entityVisible(g.items[i], x0, y0, x1, y1)) return true;
+      }
+      return false;
+    }
+    return true;
   }
 
   // ---------- drawing ----------
@@ -82,7 +171,7 @@
     if (state.hiddenLayers[g.layer]) return;
     ctx.strokeStyle = resolveColor(g);
     ctx.fillStyle = resolveColor(g);
-    ctx.lineWidth = Math.max(1, 1.1 * dpr);
+    ctx.lineWidth = lineWidth();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     if (g.type === 'line') {
@@ -162,19 +251,38 @@
 
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
     ctx.fillStyle = bgColor();
     ctx.fillRect(0, 0, r.width * dpr, r.height * dpr);
     drawGrid();
-    if (state.doc) state.doc.entities.forEach(drawEntity);
+    if (state.doc) {
+      var x0 = s2wx(0), y0 = s2wy(r.height), x1 = s2wx(r.width), y1 = s2wy(0);
+      state.doc.entities.forEach(function (g) {
+        if (settings.fastRender && !entityVisible(g, x0, y0, x1, y1)) return;
+        drawEntity(g);
+      });
+    }
     drawMeasure();
   }
 
   function fmtNum(n) {
     return (Math.round(n * 100) / 100).toLocaleString('en-US');
   }
+  function fmtSize(bytes) {
+    if (bytes >= 1048576) return (Math.round(bytes / 1048576 * 100) / 100) + 'MB';
+    if (bytes >= 1024) return Math.round(bytes / 1024) + 'KB';
+    return bytes + 'B';
+  }
+  function fmtDate(t) {
+    var d = new Date(t);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
 
   // ---------- file loading ----------
-  function loadDXF(text, name) {
+  function loadDXF(text, name, opts) {
+    opts = opts || {};
     try {
       var doc = DXF.parse(text);
       state.doc = doc;
@@ -184,49 +292,65 @@
       state.measureTotal = 0;
       state.selected = null;
       fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
-      emptyState.classList.add('hidden');
       buildLayersPanel();
-      saveRecent(name, text);
-      fitView();
+      showScreen('viewer');
+      requestAnimationFrame(function () {
+        resize();
+        fitView();
+        if (opts.save !== false) saveToLibrary(name, text, opts.size || text.length);
+      });
       showInfo('اتفتح ' + state.fileName + ' ✓');
     } catch (err) {
-      showInfo('الملف ده مش DXF صحيح — جرّب ملف تاني');
+      showHomeToast('الملف ده مش DXF صحيح — جرّب ملف تاني');
     }
+  }
+
+  function makeThumbnail() {
+    try {
+      var small = document.createElement('canvas');
+      small.width = 168; small.height = 128;
+      var sctx = small.getContext('2d');
+      sctx.fillStyle = bgColor();
+      sctx.fillRect(0, 0, 168, 128);
+      sctx.drawImage(canvas, 0, 0, 168, 128);
+      return small.toDataURL('image/jpeg', 0.7);
+    } catch (e) { return ''; }
   }
 
   function openFilePicker() { fileInput.click(); }
 
-  fileInput.addEventListener('change', function () {
-    var f = fileInput.files && fileInput.files[0];
+  function handlePickedFile(f) {
     if (!f) return;
+    if (/\.dwg$/i.test(f.name)) {
+      showHomeToast('ملف DWG لازم يتحول DXF الأول — من أوتوكاد: Save As ← DXF، وبعدها افتحه هنا');
+      return;
+    }
     var reader = new FileReader();
-    reader.onload = function () { loadDXF(String(reader.result), f.name); };
+    reader.onload = function () { loadDXF(String(reader.result), f.name, { size: f.size }); };
     reader.readAsText(f);
     fileInput.value = '';
+  }
+
+  fileInput.addEventListener('change', function () {
+    handlePickedFile(fileInput.files && fileInput.files[0]);
   });
 
-  // drag & drop
   ['dragenter', 'dragover'].forEach(function (ev) {
     document.addEventListener(ev, function (e) { e.preventDefault(); });
   });
   document.addEventListener('drop', function (e) {
     e.preventDefault();
-    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
-    var reader = new FileReader();
-    reader.onload = function () { loadDXF(String(reader.result), f.name); };
-    reader.readAsText(f);
+    handlePickedFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
   });
 
-  // demo drawing
   function loadDemo() {
     fetch('demo.dxf')
       .then(function (res) { return res.text(); })
-      .then(function (txt) { loadDXF(txt, 'رسمة تجريبية — شقة'); })
-      .catch(function () { showInfo('مش قادر أفتح الرسمة التجريبية'); });
+      .then(function (txt) { loadDXF(txt, 'رسمة تجريبية — شقة', { size: txt.length }); })
+      .catch(function () { showHomeToast('مش قادر أفتح الرسمة التجريبية'); });
   }
 
-  // ---------- recent files (IndexedDB) ----------
+  // ---------- library (IndexedDB) ----------
   var idb = null;
   function openDB() {
     return new Promise(function (resolve) {
@@ -236,33 +360,96 @@
       req.onerror = function () { resolve(false); };
     });
   }
-  function saveRecent(name, text) {
-    if (!idb || !name || text.length > 8 * 1024 * 1024) return;
+  function saveToLibrary(name, text, size) {
+    if (!idb || !name) return;
     try {
       var tx = idb.transaction('files', 'readwrite');
-      tx.objectStore('files').put({ name: name, text: text, time: Date.now() });
+      var store = tx.objectStore('files');
+      var getReq = store.get(name);
+      getReq.onsuccess = function () {
+        var prev = getReq.result || {};
+        store.put({
+          name: name, text: text, size: size || text.length,
+          time: Date.now(), thumb: makeThumbnail(),
+          favorite: !!prev.favorite, isDemo: name.indexOf('تجريبية') !== -1
+        });
+        loadLibrary();
+      };
     } catch (e) { /* ignore */ }
   }
-  function listRecent() {
+  function loadLibrary() {
     if (!idb) return;
     try {
       var tx = idb.transaction('files', 'readonly');
       var req = tx.objectStore('files').getAll();
       req.onsuccess = function () {
-        var rows = (req.result || []).sort(function (a, b) { return b.time - a.time; }).slice(0, 8);
-        var box = document.getElementById('recentList');
-        box.innerHTML = '';
-        rows.forEach(function (row) {
-          var b = document.createElement('button');
-          b.className = 'recent-item';
-          b.textContent = '📄 ' + row.name;
-          b.onclick = function () { loadDXF(row.text, row.name); };
-          box.appendChild(b);
-        });
-        document.getElementById('recentBox').classList.toggle('hidden', !rows.length);
+        state.library = req.result || [];
+        renderLibrary();
       };
     } catch (e) { /* ignore */ }
   }
+  function toggleFavorite(name) {
+    if (!idb) return;
+    try {
+      var tx = idb.transaction('files', 'readwrite');
+      var store = tx.objectStore('files');
+      var req = store.get(name);
+      req.onsuccess = function () {
+        var rec = req.result;
+        if (!rec) return;
+        rec.favorite = !rec.favorite;
+        store.put(rec);
+        loadLibrary();
+      };
+    } catch (e) { /* ignore */ }
+  }
+
+  function renderLibrary() {
+    var rows = state.library.slice();
+    if (state.tab === 'favorites') rows = rows.filter(function (r) { return r.favorite; });
+    else if (state.tab === 'drawings') rows.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    else rows.sort(function (a, b) { return b.time - a.time; });
+    fileListEl.innerHTML = '';
+    homeEmptyEl.classList.toggle('hidden', rows.length > 0 || state.tab === 'favorites');
+    if (state.tab === 'favorites' && !rows.length) {
+      var emptyFav = document.createElement('div');
+      emptyFav.className = 'empty-card';
+      emptyFav.innerHTML = '<p class="empty-sub">مفيش ملفات مفضلة لسه — دوس على النجمة ⭐ جنب أي ملف</p>';
+      fileListEl.appendChild(emptyFav);
+      return;
+    }
+    rows.forEach(function (rec) {
+      var card = document.createElement('button');
+      card.className = 'file-card';
+      var thumb = rec.thumb
+        ? '<img class="file-thumb" src="' + rec.thumb + '" alt="">'
+        : '<span class="file-thumb-placeholder">📐</span>';
+      card.innerHTML = thumb +
+        '<span class="file-meta"><span class="file-name">' + escapeHtml(rec.name) + '</span>' +
+        '<span class="file-sub">' + fmtDate(rec.time) + ' &nbsp;' + fmtSize(rec.size) + '</span></span>' +
+        '<span class="file-star' + (rec.favorite ? ' on' : '') + '" data-star="1">' + (rec.favorite ? '★' : '☆') + '</span>';
+      card.addEventListener('click', function (ev) {
+        if (ev.target.getAttribute('data-star')) {
+          ev.stopPropagation();
+          toggleFavorite(rec.name);
+          return;
+        }
+        if (!rec.text) { showHomeToast('الملف ده مش متخزن — افتحه تاني من موبايلك'); return; }
+        loadDXF(rec.text, rec.name, { save: false });
+      });
+      fileListEl.appendChild(card);
+    });
+  }
+
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      state.tab = t.getAttribute('data-tab');
+      document.querySelectorAll('.tab').forEach(function (x) {
+        x.classList.toggle('active', x === t);
+      });
+      renderLibrary();
+    });
+  });
 
   // ---------- layers panel ----------
   function buildLayersPanel() {
@@ -271,7 +458,7 @@
     state.doc.layers.forEach(function (layer) {
       var row = document.createElement('label');
       row.className = 'layer-row';
-      var dot = DXF.aciColor(layer.color, state.darkBg) || fgColor();
+      var dot = DXF.aciColor(layer.color, isDarkBg()) || fgColor();
       row.innerHTML =
         '<span class="layer-dot" style="background:' + dot + '"></span>' +
         '<span class="layer-name">' + escapeHtml(layer.name) + '</span>' +
@@ -449,8 +636,9 @@
     showInfo._t = setTimeout(function () { infoBar.classList.add('hidden'); }, 4000);
   }
 
-  document.getElementById('btnOpen').addEventListener('click', openFilePicker);
-  document.getElementById('btnDemo').addEventListener('click', loadDemo);
+  document.getElementById('btnOpenHome').addEventListener('click', openFilePicker);
+  document.getElementById('btnDemoHome').addEventListener('click', loadDemo);
+  document.getElementById('btnFab').addEventListener('click', openFilePicker);
   document.getElementById('btnDemo2').addEventListener('click', loadDemo);
   document.getElementById('btnFit').addEventListener('click', fitView);
   document.getElementById('btnZoomIn').addEventListener('click', function () {
@@ -494,14 +682,44 @@
     measureLabel.textContent = 'دوس على أول نقطة';
     render();
   });
+
+  // ---------- settings UI ----------
+  function applySettingsUI() {
+    document.querySelectorAll('#bgChoices .bg-choice').forEach(function (b) {
+      b.classList.toggle('selected', b.getAttribute('data-bg') === settings.bg);
+    });
+    document.getElementById('optLineweight').checked = settings.lineweight;
+    document.getElementById('optFastRender').checked = settings.fastRender;
+  }
+  document.querySelectorAll('#bgChoices .bg-choice').forEach(function (b) {
+    b.addEventListener('click', function () {
+      settings.bg = b.getAttribute('data-bg');
+      saveSettings();
+      applySettingsUI();
+      if (state.doc) buildLayersPanel();
+      render();
+    });
+  });
+  document.getElementById('optLineweight').addEventListener('change', function (ev) {
+    settings.lineweight = ev.target.checked;
+    saveSettings();
+    render();
+  });
+  document.getElementById('optFastRender').addEventListener('change', function (ev) {
+    settings.fastRender = ev.target.checked;
+    saveSettings();
+    render();
+  });
   document.getElementById('btnTheme').addEventListener('click', function () {
-    state.darkBg = !state.darkBg;
-    document.body.classList.toggle('light', !state.darkBg);
+    settings.bg = settings.bg === 'black' ? 'white' : settings.bg === 'white' ? 'beige' : 'black';
+    saveSettings();
+    applySettingsUI();
     if (state.doc) buildLayersPanel();
     render();
   });
 
   // ---------- init ----------
-  openDB().then(function () { listRecent(); });
-  resize();
+  applySettingsUI();
+  openDB().then(function () { loadLibrary(); });
+  showScreen('home');
 })();

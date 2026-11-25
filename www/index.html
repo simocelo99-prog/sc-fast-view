@@ -3,62 +3,139 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#0d1b2e">
+<meta name="theme-color" content="#17a398">
 <title>SC Fast View — عارض رسومات DXF</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">SC <span>Fast View</span></div>
-  <div class="filename" id="fileName">مفيش ملف مفتوح</div>
-  <button class="icon-btn" id="btnTheme" title="فاتح / غامق">🌙</button>
-</header>
 
-<main class="stage" id="stage">
-  <canvas id="canvas"></canvas>
+<!-- ============ HOME SCREEN (like DWG FastView) ============ -->
+<section id="screenHome" class="screen">
+  <header class="home-header">
+    <div class="home-logo">SC</div>
+    <div class="home-title">SC Fast View</div>
+  </header>
 
-  <div class="empty-state" id="emptyState">
+  <nav class="tabs">
+    <button class="tab active" data-tab="recent">الأخيرة</button>
+    <button class="tab" data-tab="favorites">المفضلة</button>
+    <button class="tab" data-tab="drawings">الرسومات</button>
+  </nav>
+
+  <main class="file-list" id="fileList"></main>
+
+  <div class="home-empty" id="homeEmpty">
     <div class="empty-card">
       <div class="empty-logo">SC Fast View</div>
       <p class="empty-sub">عارض رسومات سريع — من غير إعلانات</p>
-      <button class="big-btn" id="btnOpen">📂 افتح ملف DXF</button>
-      <button class="big-btn ghost" id="btnDemo">🏠 جرّب الرسمة التجريبية</button>
+      <button class="big-btn" id="btnOpenHome">📂 افتح ملف DXF</button>
+      <button class="big-btn ghost" id="btnDemoHome">🏠 جرّب الرسمة التجريبية</button>
       <div class="dwg-note">
         <b>ملفات DWG؟</b>
         التطبيق بيفتح <b>DXF</b> مباشرة. ملف DWG لازم يتحول DXF الأول — خطوة واحدة مجانية:
         من أوتوكاد: <b>Save As ← DXF</b>، أو أي محوّل مجاني DWG to DXF، وبعدها افتحه هنا.
       </div>
-      <div class="recent-box hidden" id="recentBox">
-        <div class="recent-title">آخر الملفات</div>
-        <div id="recentList"></div>
-      </div>
       <p class="install-hint">💡 عشان يبقى زي التطبيق على موبايلك: من كروم ← القائمة ⋮ ← <b>إضافة إلى الشاشة الرئيسية</b></p>
     </div>
   </div>
 
-  <div class="info-bar hidden" id="infoBar"></div>
-  <div class="measure-label" id="measureLabel"></div>
-</main>
+  <button class="fab" id="btnFab" title="افتح ملف">+</button>
 
-<div class="layers-sheet" id="layersSheet">
-  <div class="sheet-head">
-    <span>الطبقات</span>
-    <button class="icon-btn" id="btnCloseLayers">✕</button>
+  <footer class="bottom-nav">
+    <button class="nav-btn active" data-nav="home">🏠<span>الرئيسية</span></button>
+    <button class="nav-btn" data-nav="viewer">📐<span>الرسومات</span></button>
+    <button class="nav-btn" data-nav="settings">⚙️<span>الإعدادات</span></button>
+  </footer>
+</section>
+
+<!-- ============ VIEWER SCREEN ============ -->
+<section id="screenViewer" class="screen hidden">
+  <header class="topbar">
+    <button class="icon-btn" id="btnBack" title="رجوع">→</button>
+    <div class="filename" id="fileName">مفيش ملف مفتوح</div>
+    <button class="icon-btn" id="btnTheme" title="فاتح / غامق">🌙</button>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="canvas"></canvas>
+    <div class="info-bar hidden" id="infoBar"></div>
+    <div class="measure-label" id="measureLabel"></div>
+  </main>
+
+  <div class="layers-sheet" id="layersSheet">
+    <div class="sheet-head">
+      <span>الطبقات</span>
+      <button class="icon-btn" id="btnCloseLayers">✕</button>
+    </div>
+    <div id="layersList"></div>
   </div>
-  <div id="layersList"></div>
-</div>
 
-<footer class="toolbar">
-  <button class="tool-btn" id="btnDemo2">🏠 تجريبي</button>
-  <button class="tool-btn" id="btnLayers">🧱 الطبقات</button>
-  <button class="tool-btn" id="btnMeasure">📏 قياس</button>
-  <button class="tool-btn hidden" id="btnClearMeasure">🗑️ مسح القياس</button>
-  <button class="tool-btn" id="btnFit">⛶ ملاءمة</button>
-  <button class="tool-btn" id="btnZoomOut">−</button>
-  <button class="tool-btn" id="btnZoomIn">+</button>
-</footer>
+  <footer class="toolbar">
+    <button class="tool-btn" id="btnDemo2">🏠 تجريبي</button>
+    <button class="tool-btn" id="btnLayers">🧱 الطبقات</button>
+    <button class="tool-btn" id="btnMeasure">📏 قياس</button>
+    <button class="tool-btn hidden" id="btnClearMeasure">🗑️ مسح القياس</button>
+    <button class="tool-btn" id="btnFit">⛶ ملاءمة</button>
+    <button class="tool-btn" id="btnZoomOut">−</button>
+    <button class="tool-btn" id="btnZoomIn">+</button>
+  </footer>
+</section>
 
-<input type="file" id="fileInput" accept=".dxf" hidden>
+<!-- ============ SETTINGS SCREEN ============ -->
+<section id="screenSettings" class="screen hidden">
+  <header class="settings-header">
+    <button class="icon-btn dark" id="btnBackSettings" title="رجوع">→</button>
+    <div class="settings-title">الإعدادات</div>
+  </header>
+
+  <main class="settings-list">
+    <div class="setting-row">
+      <div class="setting-label">لون الخلفية</div>
+      <div class="bg-choices" id="bgChoices">
+        <button class="bg-choice black selected" data-bg="black" title="أسود"></button>
+        <button class="bg-choice white" data-bg="white" title="أبيض"></button>
+        <button class="bg-choice beige" data-bg="beige" title="بيج"></button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-text">
+        <div class="setting-label">سماكة الخطوط</div>
+        <div class="setting-sub">خطوط أوضح وأسمك في العرض</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="optLineweight">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-text">
+        <div class="setting-label">عرض سريع للملفات الكبيرة</div>
+        <div class="setting-sub">يرسم بس الجزء الظاهر على الشاشة</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="optFastRender" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-text">
+        <div class="setting-label">حول التطبيق</div>
+        <div class="setting-sub">SC Fast View — عارض DXF سريع، من غير إعلانات. ملفات DWG لازم تتحول DXF الأول.</div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="bottom-nav">
+    <button class="nav-btn" data-nav="home">🏠<span>الرئيسية</span></button>
+    <button class="nav-btn" data-nav="viewer">📐<span>الرسومات</span></button>
+    <button class="nav-btn active" data-nav="settings">⚙️<span>الإعدادات</span></button>
+  </footer>
+</section>
+
+<input type="file" id="fileInput" accept=".dxf,.dwg" hidden>
 <script src="dxf.js"></script>
 <script src="app.js"></script>
 </body>
