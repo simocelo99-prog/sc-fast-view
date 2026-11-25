@@ -120,16 +120,20 @@
   function s2wx(px) { return (px / dpr - state.ox) / state.scale; }
   function s2wy(py) { return -(py / dpr - state.oy) / state.scale; }
 
-  // Fit the main drawing, ignoring a few far-out stray points that would
-  // otherwise shrink the plan into a corner (common in real DWG files).
-  function collectFitPoints() {
-    var xs = [], ys = [];
-    function pt(x, y) {
-      if (!isFinite(x) || !isFinite(y)) return;
-      xs.push(x); ys.push(y);
-    }
-    function walk(g) {
-      if (!g) return;
+  // Fit the main drawing. Real fiber drawings have a dense plan plus long
+  // sparse routes running far away — fitting the full bounds shrinks the plan
+  // into a corner. Two ideas make the fit find the plan:
+  //  1. Size filter: drop entities far larger than the typical entity (the
+  //     long routes) from the fit computation. They stay in the drawing.
+  //  2. Two-stage density grid: a coarse 25x25 grid finds the dense region,
+  //     then a finer grid inside it tightens the box, so the box is not stuck
+  //     at one coarse cell wide. Counting is per-entity (each entity counts
+  //     once per cell it touches).
+  function collectFitEntities() {
+    var entities = [];
+    function ptsFor(g) {
+      var pts = [];
+      function pt(x, y) { if (isFinite(x) && isFinite(y)) pts.push([x, y]); }
       if (g.type === 'line') { pt(g.x1, g.y1); pt(g.x2, g.y2); }
       else if (g.type === 'polyline') {
         var step = g.points.length > 200 ? Math.ceil(g.points.length / 200) : 1;
@@ -137,29 +141,92 @@
       }
       else if (g.type === 'circle') { pt(g.cx - g.r, g.cy - g.r); pt(g.cx + g.r, g.cy + g.r); }
       else if (g.type === 'text' || g.type === 'point') pt(g.x, g.y);
-      else if (g.type === 'group') g.items.forEach(walk);
+      return pts;
+    }
+    function walk(g) {
+      if (!g) return;
+      if (g.type === 'group') { g.items.forEach(walk); return; }
+      var pts = ptsFor(g);
+      if (pts.length) entities.push(pts);
     }
     state.doc.entities.forEach(walk);
-    return { xs: xs, ys: ys };
+    return entities;
   }
-  function percentile(sorted, p) {
-    if (!sorted.length) return 0;
-    var idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * sorted.length)));
-    return sorted[idx];
+  function entitySize(pts) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    pts.forEach(function (p) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] > y1) y1 = p[1];
+    });
+    return Math.max(x1 - x0, y1 - y0);
+  }
+  // Bounding box of the cells holding at least `frac` of the densest cell's
+  // entity count, over the given bounds. Returns null when nothing qualifies.
+  function denseBox(ents, b, frac) {
+    var GX = 25, GY = 25;
+    var bw = b.maxX - b.minX, bh = b.maxY - b.minY;
+    if (!(bw > 0) || !(bh > 0)) return null;
+    var counts = new Array(GX * GY);
+    for (var c = 0; c < counts.length; c++) counts[c] = 0;
+    var maxC = 0;
+    ents.forEach(function (pts) {
+      var seen = {};
+      pts.forEach(function (p) {
+        var cx = Math.min(GX - 1, Math.max(0, Math.floor((p[0] - b.minX) / bw * GX)));
+        var cy = Math.min(GY - 1, Math.max(0, Math.floor((p[1] - b.minY) / bh * GY)));
+        var idx = cy * GX + cx;
+        if (!seen[idx]) {
+          seen[idx] = 1;
+          counts[idx]++;
+          if (counts[idx] > maxC) maxC = counts[idx];
+        }
+      });
+    });
+    if (!maxC) return null;
+    var threshold = Math.max(2, Math.ceil(maxC * frac));
+    var x0 = GX, x1 = -1, y0 = GY, y1 = -1, any = false;
+    for (var j = 0; j < GX * GY; j++) {
+      if (counts[j] >= threshold) {
+        var gx = j % GX, gy = Math.floor(j / GX);
+        if (gx < x0) x0 = gx;
+        if (gx > x1) x1 = gx;
+        if (gy < y0) y0 = gy;
+        if (gy > y1) y1 = gy;
+        any = true;
+      }
+    }
+    if (!any) return null;
+    return {
+      minX: b.minX + (x0 / GX) * bw, maxX: b.minX + ((x1 + 1) / GX) * bw,
+      minY: b.minY + (y0 / GY) * bh, maxY: b.minY + ((y1 + 1) / GY) * bh
+    };
   }
   function fitBounds() {
     var b = state.doc.bounds;
     if (settings.fitAll) return b;
-    var pts = collectFitPoints();
-    if (pts.xs.length < 20) return b;
-    pts.xs.sort(function (a, c) { return a - c; });
-    pts.ys.sort(function (a, c) { return a - c; });
-    var x0 = percentile(pts.xs, 0.005), x1 = percentile(pts.xs, 0.995);
-    var y0 = percentile(pts.ys, 0.005), y1 = percentile(pts.ys, 0.995);
-    if (!(x1 > x0) || !(y1 > y0)) return b;
-    // guard: if the clipped range is absurdly small vs full bounds, fall back
-    if ((x1 - x0) < (b.maxX - b.minX) * 0.01 || (y1 - y0) < (b.maxY - b.minY) * 0.01) return b;
-    return { minX: x0, minY: y0, maxX: x1, maxY: y1 };
+    var ents = collectFitEntities();
+    if (ents.length < 5) return b;
+    // size filter: keep entities up to 8x the median entity size
+    var sizes = ents.map(entitySize).sort(function (a, c) { return a - c; });
+    var median = sizes[Math.floor(sizes.length / 2)] || 0;
+    var kept = ents;
+    if (median > 0) {
+      var limit = median * 8;
+      kept = ents.filter(function (pts) { return entitySize(pts) <= limit; });
+      if (kept.length < 5) kept = ents;
+    }
+    var box = denseBox(kept, b, 0.05);
+    if (!box) return b;
+    var refined = denseBox(kept, box, 0.01);
+    if (refined) box = refined;
+    // 10% padding around the dense region
+    var mx = (box.maxX - box.minX) * 0.1, my = (box.maxY - box.minY) * 0.1;
+    var rx0 = Math.max(b.minX, box.minX - mx), rx1 = Math.min(b.maxX, box.maxX + mx);
+    var ry0 = Math.max(b.minY, box.minY - my), ry1 = Math.min(b.maxY, box.maxY + my);
+    if (!(rx1 > rx0) || !(ry1 > ry0)) return b;
+    return { minX: rx0, minY: ry0, maxX: rx1, maxY: ry1 };
   }
 
   function fitView() {
@@ -801,7 +868,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.3.0', code: 4 };
+  var APP_VERSION = { version: '1.3.1', code: 5 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
