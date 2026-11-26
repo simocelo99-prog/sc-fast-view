@@ -91,13 +91,16 @@
   document.getElementById('btnBack').addEventListener('click', function () { showScreen('home'); });
   document.getElementById('btnBackSettings').addEventListener('click', function () { showScreen('home'); });
 
-  // home toast (created dynamically). It must live on document.body, not
+  // App toast (created dynamically). It must live on document.body, not
   // inside the home screen: a toast shown while the user is in Settings (or
   // the viewer) would otherwise be invisible, because its parent screen is
   // hidden — that is why tapping "تحقق" in Settings seemed to do nothing.
+  // It uses its own .app-toast class (a small pill): the old code reused
+  // .info-bar, whose `top: 12px` plus the inline `bottom: 90px` stretched
+  // it into a full-screen dark overlay — ugly and unprofessional.
   var homeToast = document.createElement('div');
-  homeToast.className = 'info-bar';
-  homeToast.style.cssText = 'position:fixed;bottom:90px;right:12px;left:12px;z-index:30;display:none;';
+  homeToast.className = 'app-toast';
+  homeToast.style.display = 'none';
   document.body.appendChild(homeToast);
   var homeToastTimer = null;
   function showHomeToast(msg) {
@@ -972,7 +975,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.4.0', code: 9 };
+  var APP_VERSION = { version: '1.4.1', code: 10 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 

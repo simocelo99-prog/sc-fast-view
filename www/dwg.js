@@ -51,21 +51,61 @@
     });
   }
 
+  // The DWG engine as a release asset: used only when the app has no cached
+  // engine and no bundled one (small APK). Same file in every release.
+  var WASM_RELEASE_URL = 'https://github.com/simocelo99-prog/sc-fast-view/releases/latest/download/libredwg-web.wasm';
+
+  // Save downloaded engine bytes into the app's storage (best effort).
+  function putCachedWasm(buf) {
+    try {
+      var req = indexedDB.open('scfastview');
+      req.onsuccess = function () {
+        try {
+          var db = req.result;
+          if (!db.objectStoreNames.contains('wasm')) return;
+          db.transaction('wasm', 'readwrite').objectStore('wasm')
+            .put({ name: 'libredwg-web.wasm', data: buf, size: buf.byteLength, savedAt: Date.now() });
+        } catch (e) { /* ignore */ }
+      };
+    } catch (e) { /* ignore */ }
+  }
+
+  // Download the engine once from the release (only for a fresh install of
+  // a small APK, or when the cache missed). Returns ArrayBuffer or null.
+  function downloadWasmEngine() {
+    return fetch(WASM_RELEASE_URL).then(function (res) {
+      if (!res.ok) return null;
+      return res.arrayBuffer();
+    }).then(function (buf) {
+      if (buf) putCachedWasm(buf);
+      return buf;
+    }).catch(function () { return null; });
+  }
+
+  function createFromBytes(mod, bytes) {
+    return mod.createModule({ wasmBinary: bytes }).then(function (inst) {
+      return mod.LibreDwg.createByWasmInstance(inst);
+    });
+  }
+
+  // 1) cached engine, 2) bundled file, 3) download once from the release.
+  function tryCreate(mod, bytes) {
+    var chain = bytes
+      ? createFromBytes(mod, bytes).catch(function () { return mod.LibreDwg.create(); })
+      : mod.LibreDwg.create();
+    return chain.catch(function () {
+      return downloadWasmEngine().then(function (dl) {
+        if (!dl) throw new Error('تعذّر تحميل محرك DWG — اتأكد من النت وحاول تاني');
+        return createFromBytes(mod, dl);
+      });
+    });
+  }
+
   function loadLib() {
     if (loadPromise) return loadPromise;
     loadPromise = import('./libredwg/libredwg-web.js').then(function (mod) {
       FileTypeDWG = mod.Dwg_File_Type.DWG;
-      // Prefer the cached engine (wasmBinary) so a future APK can ship
-      // without the 8 MB file; fall back to the bundled file next to the
-      // glue, which works from a Capacitor asset URL.
-      return getCachedWasm().then(function (bytes) {
-        if (bytes) {
-          return mod.createModule({ wasmBinary: bytes }).then(function (inst) {
-            return mod.LibreDwg.createByWasmInstance(inst);
-          });
-        }
-        return mod.LibreDwg.create();
-      }).catch(function () { return mod.LibreDwg.create(); });
+      return getCachedWasm().then(function (bytes) { return tryCreate(mod, bytes); });
     });
     return loadPromise;
   }
