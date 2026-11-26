@@ -47,12 +47,26 @@
     // Professional toolbar tools (like DWG FastView):
     // null | 'measure' | 'dimension' | 'annotate' | 'draw' | 'edit'
     tool: null,
+    // Annotation sub-tools (the bar inside Annotation, like the real app):
+    // 'sketch' | 'arrow' | 'text' | 'revcloud' | 'recording' | 'image'
+    annotateSub: 'text',
     annotations: [],   // {x, y, text} in world coords — saved per file
     strokes: [],       // {color, pts: [[x,y],...]} — saved per file
     dimensions: [],    // {a: [x,y], b: [x,y], dist} — saved per file
+    arrows: [],        // {a: [x,y], b: [x,y]} — saved per file
+    revclouds: [],     // {box: [x0,y0,x1,y1]} — saved per file
+    recordings: [],    // {x, y, audio: dataURL, dur} — saved per file
+    images: [],        // {x, y, data: dataURL} — saved per file
     dimPending: null,
     drawColor: '#EF4444',
     currentStroke: null,
+    pendingArrow: null,
+    pendingBox: null,
+    pendingImagePoint: null,
+    recording: null,        // {recorder, startTime, secs, timer}
+    playingRecording: null, // {item, audio}
+    currentImage: null,
+    imageCache: {},
     editMoveArmed: false,
     editDrag: null,
     pendingNote: null,
@@ -470,10 +484,63 @@
     ctx.textAlign = 'left';
   }
 
+  // Revision cloud: arcs along the perimeter of a world-coords box,
+  // drawn in screen space so the arcs stay a readable size at any zoom.
+  function drawRevcloud(box) {
+    var x0 = w2sx(box[0]), y0 = w2sy(box[3]);
+    var x1 = w2sx(box[2]), y1 = w2sy(box[1]);
+    var w = x1 - x0, h = y1 - y0;
+    if (w < 4 || h < 4) return;
+    var r = Math.max(7 * dpr, Math.min(18 * dpr, Math.min(w, h) / 6));
+    ctx.strokeStyle = '#22C55E';
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    // top edge (left -> right, bulging up)
+    var x = x0;
+    while (x < x1) { var cx = Math.min(x + r, x1); ctx.arc((x + cx) / 2, y0, (cx - x) / 2, Math.PI, 0); x = cx; }
+    // right edge (top -> bottom, bulging right)
+    var y = y0;
+    while (y < y1) { var cy = Math.min(y + r, y1); ctx.arc(x1, (y + cy) / 2, (cy - y) / 2, -Math.PI / 2, Math.PI / 2); y = cy; }
+    // bottom edge (right -> left, bulging down)
+    x = x1;
+    while (x > x0) { var cx2 = Math.max(x - r, x0); ctx.arc((x + cx2) / 2, y1, (x - cx2) / 2, 0, Math.PI); x = cx2; }
+    // left edge (bottom -> top, bulging left)
+    y = y1;
+    while (y > y0) { var cy2 = Math.max(y - r, y0); ctx.arc(x0, (y + cy2) / 2, (y - cy2) / 2, Math.PI / 2, Math.PI * 1.5); y = cy2; }
+    ctx.stroke();
+  }
+
   function drawOverlays() {
     var k;
     // dimensions
     for (k = 0; k < state.dimensions.length; k++) drawDimension(state.dimensions[k]);
+    // arrows (red) + the one being dragged right now
+    function drawArrow(a) {
+      var ax = w2sx(a.a[0]), ay = w2sy(a.a[1]);
+      var bx = w2sx(a.b[0]), by = w2sy(a.b[1]);
+      if (Math.hypot(bx - ax, by - ay) < 2) return;
+      ctx.strokeStyle = '#EF4444';
+      ctx.fillStyle = '#EF4444';
+      ctx.lineWidth = 2.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      ctx.stroke();
+      arrowHead(bx, by, Math.atan2(by - ay, bx - ax));
+    }
+    for (k = 0; k < state.arrows.length; k++) drawArrow(state.arrows[k]);
+    if (state.pendingArrow) drawArrow(state.pendingArrow);
+    // revision clouds (green arcs around a box) + the one being dragged
+    for (k = 0; k < state.revclouds.length; k++) drawRevcloud(state.revclouds[k].box);
+    if (state.pendingBox) {
+      var pb = state.pendingBox;
+      ctx.strokeStyle = '#22C55E';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.setLineDash([5 * dpr, 4 * dpr]);
+      ctx.strokeRect(w2sx(Math.min(pb.x0, pb.x1)), w2sy(Math.max(pb.y0, pb.y1)),
+        Math.abs(pb.x1 - pb.x0) * state.scale * dpr, Math.abs(pb.y1 - pb.y0) * state.scale * dpr);
+      ctx.setLineDash([]);
+      drawRevcloud([Math.min(pb.x0, pb.x1), Math.min(pb.y0, pb.y1), Math.max(pb.x0, pb.x1), Math.max(pb.y0, pb.y1)]);
+    }
     // freehand strokes (plus the one being drawn right now)
     function strokePath(s) {
       if (!s.pts || s.pts.length < 2) return;
@@ -490,6 +557,58 @@
     }
     for (k = 0; k < state.strokes.length; k++) strokePath(state.strokes[k]);
     if (state.currentStroke) strokePath(state.currentStroke);
+    // voice-note pins (red circle + mic) and image pins (thumbnail)
+    for (k = 0; k < state.recordings.length; k++) {
+      var rc = state.recordings[k];
+      var rx = w2sx(rc.x), ry = w2sy(rc.y);
+      ctx.fillStyle = '#EF4444';
+      ctx.beginPath(); ctx.arc(rx, ry, 13 * dpr, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = Math.round(14 * dpr) + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('🎙️', rx, ry + 5 * dpr);
+      ctx.textAlign = 'left';
+      if (rc.dur) {
+        ctx.font = 'bold ' + Math.round(11 * dpr) + 'px sans-serif';
+        var durTxt = Math.floor(rc.dur / 60) + ':' + ('0' + (rc.dur % 60)).slice(-2);
+        var dw = ctx.measureText(durTxt).width;
+        ctx.fillStyle = 'rgba(15, 23, 42, .88)';
+        ctx.fillRect(rx + 16 * dpr, ry - 9 * dpr, dw + 10 * dpr, 18 * dpr);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(durTxt, rx + 21 * dpr, ry + 4 * dpr);
+      }
+    }
+    for (k = 0; k < state.images.length; k++) {
+      var im = state.images[k];
+      var ix = w2sx(im.x), iy = w2sy(im.y);
+      var thumb = state.imageCache[im.data];
+      if (typeof Image !== 'undefined' && !thumb) {
+        thumb = new Image();
+        thumb.onload = function () { render(); };
+        thumb.src = im.data;
+        state.imageCache[im.data] = thumb;
+      }
+      if (thumb && thumb.complete && thumb.naturalWidth) {
+        var ts = 64 * dpr;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ix - ts / 2, iy - ts / 2, ts, ts);
+        ctx.clip();
+        ctx.drawImage(thumb, ix - ts / 2, iy - ts / 2, ts, ts);
+        ctx.restore();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2 * dpr;
+        ctx.strokeRect(ix - ts / 2, iy - ts / 2, ts, ts);
+      } else {
+        ctx.fillStyle = '#3B82F6';
+        ctx.beginPath(); ctx.arc(ix, iy, 13 * dpr, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = Math.round(13 * dpr) + 'px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('🖼️', ix, iy + 5 * dpr);
+        ctx.textAlign = 'left';
+      }
+    }
     // note pins (numbered) + their text in a dark pill
     for (k = 0; k < state.annotations.length; k++) {
       var a = state.annotations[k];
@@ -566,11 +685,22 @@
     state.selected = null;
     // fresh markup state for the new file (saved markups load below)
     state.tool = null;
+    state.annotateSub = 'text';
     state.annotations = [];
     state.strokes = [];
     state.dimensions = [];
+    state.arrows = [];
+    state.revclouds = [];
+    state.recordings = [];
+    state.images = [];
     state.dimPending = null;
     state.currentStroke = null;
+    state.pendingArrow = null;
+    state.pendingBox = null;
+    state.pendingImagePoint = null;
+    state.imageCache = {};
+    stopPlayback();
+    if (state.recording) stopRecording();
     state.editMoveArmed = false;
     state.editDrag = null;
     state.pendingNote = null;
@@ -579,7 +709,9 @@
     updateUndoButtons();
     hideEditBar();
     closeNoteSheet();
+    closeImageViewer();
     document.getElementById('drawPalette').classList.add('hidden');
+    document.getElementById('annotateBar').classList.add('hidden');
     fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
     buildLayersPanel();
     buildSearchIndex();
@@ -681,9 +813,10 @@
       req.onerror = function () { resolve(false); };
     });
   }
-  // Save the current file's markups (notes, strokes, dimensions) so they
-  // are still there when the file is opened again. Move/delete edits are
-  // session-only: they live on the parsed entities, which are rebuilt on load.
+  // Save the current file's markups (notes, strokes, dimensions, arrows,
+  // clouds, voice notes, photos) so they are still there when the file is
+  // opened again. Move/delete edits are session-only: they live on the
+  // parsed entities, which are rebuilt on load.
   function saveMarkups() {
     if (!idb || !state.fileName || !state.doc) return;
     try {
@@ -692,7 +825,11 @@
         name: state.fileName,
         annotations: state.annotations,
         strokes: state.strokes,
-        dimensions: state.dimensions
+        dimensions: state.dimensions,
+        arrows: state.arrows,
+        revclouds: state.revclouds,
+        recordings: state.recordings,
+        images: state.images
       });
     } catch (e) { /* ignore */ }
   }
@@ -707,6 +844,10 @@
           state.annotations = rec.annotations || [];
           state.strokes = rec.strokes || [];
           state.dimensions = rec.dimensions || [];
+          state.arrows = rec.arrows || [];
+          state.revclouds = rec.revclouds || [];
+          state.recordings = rec.recordings || [];
+          state.images = rec.images || [];
           render();
         }
       };
@@ -1151,27 +1292,55 @@
       render();
       return;
     }
-    // --- annotate: tap a pin to delete it, tap empty space to add a note ---
+    // --- annotate: sub-tools ---
     if (state.tool === 'annotate') {
       var tapSx = wx * state.scale + state.ox;
       var tapSy = -wy * state.scale + state.oy;
-      for (var i = 0; i < state.annotations.length; i++) {
-        var an = state.annotations[i];
-        var pinSx = an.x * state.scale + state.ox;
-        var pinSy = -an.y * state.scale + state.oy;
-        if (Math.hypot(pinSx - tapSx, pinSy - tapSy) <= 26) {
-          state.annotations.splice(i, 1);
-          pushUndo({ type: 'delete-annotation', item: an, index: i });
-          showHomeToast('تم حذف الملاحظة: ' + an.text);
-          saveMarkups();
-          render();
+      function pinHit(px, py) {
+        return Math.hypot(px * state.scale + state.ox - tapSx, -py * state.scale + state.oy - tapSy) <= 26;
+      }
+      // recording pins: tap to play / stop (any annotate sub-mode)
+      for (var ri = 0; ri < state.recordings.length; ri++) {
+        if (pinHit(state.recordings[ri].x, state.recordings[ri].y)) {
+          togglePlayback(state.recordings[ri]);
           return;
         }
       }
-      state.pendingNote = { x: wx, y: wy };
-      document.getElementById('noteInput').value = '';
-      noteSheetEl.classList.add('open');
-      setTimeout(function () { document.getElementById('noteInput').focus(); }, 250);
+      // image pins: tap to view (any annotate sub-mode)
+      for (var ii = 0; ii < state.images.length; ii++) {
+        if (pinHit(state.images[ii].x, state.images[ii].y)) {
+          openImageViewer(state.images[ii]);
+          return;
+        }
+      }
+      if (state.annotateSub === 'text') {
+        // tap a note pin to delete it, tap empty space to add a note
+        for (var i = 0; i < state.annotations.length; i++) {
+          var an = state.annotations[i];
+          if (pinHit(an.x, an.y)) {
+            state.annotations.splice(i, 1);
+            pushUndo({ type: 'delete-annotation', item: an, index: i });
+            showHomeToast('تم حذف الملاحظة: ' + an.text);
+            saveMarkups();
+            render();
+            return;
+          }
+        }
+        state.pendingNote = { x: wx, y: wy };
+        document.getElementById('noteInput').value = '';
+        noteSheetEl.classList.add('open');
+        setTimeout(function () { document.getElementById('noteInput').focus(); }, 250);
+        return;
+      }
+      if (state.annotateSub === 'recording') {
+        startRecordingAt(wx, wy);
+        return;
+      }
+      if (state.annotateSub === 'image') {
+        openImagePickerAt(wx, wy);
+        return;
+      }
+      // sketch / arrow / revcloud are drag-based — taps do nothing
       return;
     }
     // --- edit: tap an entity to select it ---
@@ -1214,10 +1383,14 @@
     return (best && bestD <= tol) ? best : null;
   }
 
-  // ---------- pointer: pan / pinch / tap ----------
+  // ---------- pointer: pan / pinch / tap / draw / arrow / revcloud ----------
   var pointers = new Map();
   var pinchStart = 0, pinchScale = 1;
   var downPos = null, downTime = 0, moved = 0;
+
+  function isSketching() {
+    return state.tool === 'draw' || (state.tool === 'annotate' && state.annotateSub === 'sketch');
+  }
 
   canvas.addEventListener('pointerdown', function (e) {
     canvas.setPointerCapture(e.pointerId);
@@ -1228,15 +1401,21 @@
       moved = 0;
       var r = canvas.getBoundingClientRect();
       var wx = s2wx(e.clientX - r.left), wy = s2wy(e.clientY - r.top);
-      if (state.tool === 'draw') {
+      if (isSketching()) {
         // freehand: a drag draws, panning is off in this mode
         state.currentStroke = { color: state.drawColor, pts: [[wx, wy]] };
+      } else if (state.tool === 'annotate' && state.annotateSub === 'arrow') {
+        state.pendingArrow = { a: [wx, wy], b: [wx, wy] };
+      } else if (state.tool === 'annotate' && state.annotateSub === 'revcloud') {
+        state.pendingBox = { x0: wx, y0: wy, x1: wx, y1: wy };
       } else if (state.tool === 'edit' && state.editMoveArmed && state.selected) {
         state.editDrag = { g: state.selected, lastX: wx, lastY: wy, dx: 0, dy: 0 };
       }
     } else if (pointers.size === 2) {
-      // pinch zoom cancels any in-progress stroke or move
+      // pinch zoom cancels any in-progress stroke, arrow, cloud or move
       state.currentStroke = null;
+      state.pendingArrow = null;
+      state.pendingBox = null;
       state.editDrag = null;
       var pts = Array.from(pointers.values());
       pinchStart = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
@@ -1257,6 +1436,15 @@
         var pts = state.currentStroke.pts;
         var last = pts[pts.length - 1];
         if (Math.hypot(wx - last[0], wy - last[1]) > 0.5 / state.scale) pts.push([wx, wy]);
+        render();
+      } else if (state.pendingArrow) {
+        var ra = canvas.getBoundingClientRect();
+        state.pendingArrow.b = [s2wx(e.clientX - ra.left), s2wy(e.clientY - ra.top)];
+        render();
+      } else if (state.pendingBox) {
+        var rb = canvas.getBoundingClientRect();
+        state.pendingBox.x1 = s2wx(e.clientX - rb.left);
+        state.pendingBox.y1 = s2wy(e.clientY - rb.top);
         render();
       } else if (state.editDrag) {
         var r2 = canvas.getBoundingClientRect();
@@ -1299,6 +1487,26 @@
         if (s.pts.length >= 2) {
           state.strokes.push(s);
           pushUndo({ type: 'add-stroke', item: s });
+          saveMarkups();
+        }
+        render();
+      } else if (state.pendingArrow) {
+        var ar = state.pendingArrow;
+        state.pendingArrow = null;
+        if (Math.hypot(ar.b[0] - ar.a[0], ar.b[1] - ar.a[1]) > 2 / state.scale) {
+          state.arrows.push(ar);
+          pushUndo({ type: 'add-arrow', item: ar });
+          saveMarkups();
+        }
+        render();
+      } else if (state.pendingBox) {
+        var bx = state.pendingBox;
+        state.pendingBox = null;
+        var bw = Math.abs(bx.x1 - bx.x0), bh = Math.abs(bx.y1 - bx.y0);
+        if (bw > 2 / state.scale && bh > 2 / state.scale) {
+          var cloud = { box: [Math.min(bx.x0, bx.x1), Math.min(bx.y0, bx.y1), Math.max(bx.x0, bx.x1), Math.max(bx.y0, bx.y1)] };
+          state.revclouds.push(cloud);
+          pushUndo({ type: 'add-revcloud', item: cloud });
           saveMarkups();
         }
         render();
@@ -1436,6 +1644,24 @@
     } else if (a.type === 'add-dimension') {
       if (isUndo) removeFrom(state.dimensions, a.item); else state.dimensions.push(a.item);
       saveMarkups();
+    } else if (a.type === 'add-arrow') {
+      if (isUndo) removeFrom(state.arrows, a.item); else state.arrows.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'add-revcloud') {
+      if (isUndo) removeFrom(state.revclouds, a.item); else state.revclouds.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'add-recording') {
+      if (isUndo) removeFrom(state.recordings, a.item); else state.recordings.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'delete-recording') {
+      if (isUndo) state.recordings.splice(a.index, 0, a.item); else removeFrom(state.recordings, a.item);
+      saveMarkups();
+    } else if (a.type === 'add-image') {
+      if (isUndo) removeFrom(state.images, a.item); else state.images.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'delete-image') {
+      if (isUndo) state.images.splice(a.index, 0, a.item); else removeFrom(state.images, a.item);
+      saveMarkups();
     } else if (a.type === 'delete-entity') {
       a.g._deleted = !isUndo;
     } else if (a.type === 'move-entity') {
@@ -1527,6 +1753,152 @@
     render();
   });
 
+  // ---------- voice notes (recording sub-tool) ----------
+  var recordBarEl = document.getElementById('recordBar');
+  var recordPlayBarEl = document.getElementById('recordPlayBar');
+
+  function startRecordingAt(wx, wy) {
+    if (state.recording) { stopRecording(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showHomeToast('التسجيل الصوتي مش متاح على الجهاز ده');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      var mr;
+      try { mr = new MediaRecorder(stream); } catch (e) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        showHomeToast('التسجيل الصوتي مش متاح على الجهاز ده');
+        return;
+      }
+      var rec = { recorder: mr, point: [wx, wy], startTime: Date.now(), secs: 0, timer: null };
+      var chunks = [];
+      mr.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+      mr.onstop = function () {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        var blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+        var reader = new FileReader();
+        reader.onload = function () {
+          var item = { x: rec.point[0], y: rec.point[1], audio: reader.result, dur: rec.secs };
+          state.recordings.push(item);
+          pushUndo({ type: 'add-recording', item: item });
+          saveMarkups();
+          render();
+        };
+        reader.readAsDataURL(blob);
+      };
+      state.recording = rec;
+      mr.start();
+      recordBarEl.classList.remove('hidden');
+      document.getElementById('recordTimer').textContent = '0:00';
+      rec.timer = setInterval(function () {
+        rec.secs = Math.floor((Date.now() - rec.startTime) / 1000);
+        document.getElementById('recordTimer').textContent =
+          Math.floor(rec.secs / 60) + ':' + ('0' + (rec.secs % 60)).slice(-2);
+        if (rec.secs >= 60) stopRecording(); // cap: 60 seconds per note
+      }, 500);
+    }).catch(function () {
+      showHomeToast('مش قادر أشغّل الميكروفون — اتأكد من الإذن في إعدادات التطبيق');
+    });
+  }
+  function stopRecording() {
+    if (!state.recording) return;
+    var rec = state.recording;
+    clearInterval(rec.timer);
+    recordBarEl.classList.add('hidden');
+    state.recording = null;
+    try { if (rec.recorder.state !== 'inactive') rec.recorder.stop(); } catch (e) { /* ignore */ }
+  }
+  document.getElementById('btnStopRecord').addEventListener('click', stopRecording);
+
+  function togglePlayback(item) {
+    if (state.playingRecording && state.playingRecording.item === item) { stopPlayback(); return; }
+    stopPlayback();
+    var audio = new Audio(item.audio);
+    audio.onended = function () { stopPlayback(); };
+    audio.play().catch(function () { showHomeToast('مش قادر أشغّل التسجيل'); });
+    state.playingRecording = { item: item, audio: audio };
+    recordPlayBarEl.classList.remove('hidden');
+  }
+  function stopPlayback() {
+    if (state.playingRecording) {
+      try { state.playingRecording.audio.pause(); } catch (e) { /* ignore */ }
+      state.playingRecording = null;
+    }
+    recordPlayBarEl.classList.add('hidden');
+  }
+  document.getElementById('btnStopPlayback').addEventListener('click', stopPlayback);
+  document.getElementById('btnDeleteRecording').addEventListener('click', function () {
+    if (!state.playingRecording) return;
+    var item = state.playingRecording.item;
+    var idx = state.recordings.indexOf(item);
+    stopPlayback();
+    if (idx !== -1) {
+      state.recordings.splice(idx, 1);
+      pushUndo({ type: 'delete-recording', item: item, index: idx });
+      saveMarkups();
+      showHomeToast('تم حذف التسجيل');
+      render();
+    }
+  });
+
+  // ---------- attached photos (image sub-tool) ----------
+  var imageViewerEl = document.getElementById('imageViewer');
+  var imageViewerImgEl = document.getElementById('imageViewerImg');
+
+  function openImagePickerAt(wx, wy) {
+    state.pendingImagePoint = { x: wx, y: wy };
+    document.getElementById('imageInput').click();
+  }
+  document.getElementById('imageInput').addEventListener('change', function (ev) {
+    var f = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!f || !state.pendingImagePoint) return;
+    var point = state.pendingImagePoint;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        // downscale so the stored note stays small (max 480px, JPEG 0.75)
+        var max = 480, sc = Math.min(1, max / Math.max(img.width, img.height));
+        var cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.width * sc));
+        cv.height = Math.max(1, Math.round(img.height * sc));
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        var item = { x: point.x, y: point.y, data: cv.toDataURL('image/jpeg', 0.75) };
+        state.images.push(item);
+        pushUndo({ type: 'add-image', item: item });
+        saveMarkups();
+        state.pendingImagePoint = null;
+        render();
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+  });
+  function openImageViewer(item) {
+    state.currentImage = item;
+    imageViewerImgEl.src = item.data;
+    imageViewerEl.classList.remove('hidden');
+  }
+  function closeImageViewer() {
+    imageViewerEl.classList.add('hidden');
+    state.currentImage = null;
+  }
+  document.getElementById('btnCloseImage').addEventListener('click', closeImageViewer);
+  document.getElementById('btnDeleteImage').addEventListener('click', function () {
+    if (!state.currentImage) return;
+    var item = state.currentImage;
+    var idx = state.images.indexOf(item);
+    closeImageViewer();
+    if (idx !== -1) {
+      state.images.splice(idx, 1);
+      pushUndo({ type: 'delete-image', item: item, index: idx });
+      saveMarkups();
+      showHomeToast('تم حذف الصورة');
+      render();
+    }
+  });
+
   function setTool(t) {
     if (t === state.tool) t = null;
     // clear the previous tool's transient state
@@ -1536,24 +1908,64 @@
     measureLabel.textContent = '';
     state.dimPending = null;
     state.currentStroke = null;
+    state.pendingArrow = null;
+    state.pendingBox = null;
     state.editMoveArmed = false;
     state.editDrag = null;
     if (state.tool === 'edit') { state.selected = null; hideEditBar(); }
     closeNoteSheet();
+    if (state.recording) stopRecording();
     state.tool = t;
     if (t === 'measure') {
       state.measureMode = true;
       measureLabel.textContent = 'دوس على أول نقطة';
+    }
+    if (t === 'annotate') {
+      document.getElementById('annotateBar').classList.remove('hidden');
+      setAnnotateSub(state.annotateSub || 'text');
+    } else {
+      document.getElementById('annotateBar').classList.add('hidden');
     }
     document.getElementById('btnAnnotate').classList.toggle('active', t === 'annotate');
     document.getElementById('btnDraw').classList.toggle('active', t === 'draw');
     document.getElementById('btnEdit').classList.toggle('active', t === 'edit');
     document.getElementById('btnMeasure').classList.toggle('active', t === 'measure');
     document.getElementById('btnDimension').classList.toggle('active', t === 'dimension');
-    document.getElementById('drawPalette').classList.toggle('hidden', t !== 'draw');
+    updateDrawPalette();
     document.getElementById('btnClearMeasure').classList.toggle('hidden', t !== 'measure');
     render();
   }
+
+  // The draw color palette shows for the Draw tool and for the Sketch
+  // sub-tool inside Annotation (where it floats above the annotate bar).
+  function updateDrawPalette() {
+    var show = state.tool === 'draw' ||
+      (state.tool === 'annotate' && state.annotateSub === 'sketch');
+    var pal = document.getElementById('drawPalette');
+    pal.classList.toggle('hidden', !show);
+    pal.classList.toggle('above-annotate', state.tool === 'annotate' && state.annotateSub === 'sketch');
+  }
+
+  var ANNOTATE_HINTS = {
+    sketch: 'ارسم بإصبعك على الرسمة',
+    arrow: 'اسحب من نقطة لنقطة عشان ترسم سهم',
+    text: 'دوس على مكان الملاحظة',
+    revcloud: 'اسحب مستطيل حوالين المنطقة اللي عايز تعلّم عليها',
+    recording: 'دوس على مكان التسجيل الصوتي — ودوس على الدبوس الأحمر عشان تسمعه',
+    image: 'دوس على مكان الصورة — ودوس على الصورة عشان تكبّرها'
+  };
+  function setAnnotateSub(sub) {
+    state.annotateSub = sub;
+    document.querySelectorAll('#annotateBar .sub-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-sub') === sub);
+    });
+    measureLabel.textContent = ANNOTATE_HINTS[sub] || '';
+    updateDrawPalette();
+    render();
+  }
+  document.querySelectorAll('#annotateBar .sub-btn').forEach(function (b) {
+    b.addEventListener('click', function () { setAnnotateSub(b.getAttribute('data-sub')); });
+  });
   document.getElementById('btnAnnotate').addEventListener('click', function () {
     if (!state.doc) { showInfo('افتح ملف الأول عشان تضيف ملاحظة'); return; }
     setTool('annotate');
@@ -1617,7 +2029,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.0', code: 16 };
+  var APP_VERSION = { version: '1.6.1', code: 17 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -1674,8 +2086,9 @@
 
   // Debug handle for automated checks (harmless in production).
   window.__scfv = {
-    state: state, setTool: setTool, handleTap: handleTap,
-    translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo,
-    loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups
+    state: state, setTool: setTool, setAnnotateSub: setAnnotateSub, handleTap: handleTap,
+    translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo, pushUndo: pushUndo,
+    loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
+    togglePlayback: togglePlayback, openImageViewer: openImageViewer
   };
 })();

@@ -97,7 +97,29 @@
       <span class="palette-sep"></span>
       <button id="btnClearStrokes" title="مسح كل الرسم">🗑️</button>
     </div>
+    <div class="annotate-bar hidden" id="annotateBar">
+      <button class="sub-btn" data-sub="sketch"><span class="sub-ico">✏️</span><span class="sub-label">رسم حر</span></button>
+      <button class="sub-btn" data-sub="arrow"><span class="sub-ico">↗️</span><span class="sub-label">سهم</span></button>
+      <button class="sub-btn" data-sub="text"><span class="sub-ico">🔤</span><span class="sub-label">نص</span></button>
+      <button class="sub-btn" data-sub="revcloud"><span class="sub-ico">☁️</span><span class="sub-label">سحابة</span></button>
+      <button class="sub-btn" data-sub="recording"><span class="sub-ico">🎙️</span><span class="sub-label">تسجيل</span></button>
+      <button class="sub-btn" data-sub="image"><span class="sub-ico">🖼️</span><span class="sub-label">صورة</span></button>
+    </div>
+    <div class="record-bar hidden" id="recordBar">
+      <span class="record-dot">🔴</span><span id="recordTimer">0:00</span>
+      <button id="btnStopRecord">⏹️ إيقاف التسجيل</button>
+    </div>
+    <div class="edit-bar hidden" id="recordPlayBar">
+      <button id="btnStopPlayback">⏹️ إيقاف التشغيل</button>
+      <button id="btnDeleteRecording">🗑️ حذف التسجيل</button>
+    </div>
   </main>
+
+  <div class="image-viewer hidden" id="imageViewer">
+    <button class="icon-btn" id="btnCloseImage">✕</button>
+    <img id="imageViewerImg" alt="صورة مرفقة بالرسمة">
+    <button class="image-del-btn" id="btnDeleteImage">🗑️ حذف الصورة</button>
+  </div>
 
   <div class="layers-sheet" id="layersSheet">
     <div class="sheet-handle"></div>
@@ -229,6 +251,7 @@
 </div>
 
 <input type="file" id="fileInput" accept=".dxf,.dwg" hidden>
+<input type="file" id="imageInput" accept="image/*" hidden>
 <script src="dxf.js"></script>
 <script src="dwg.js"></script>
 <script src="app.js"></script>
