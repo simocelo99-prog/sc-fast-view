@@ -282,29 +282,6 @@
     return null;
   }
 
-  function computeBounds(entities) {
-    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    function pt(x, y) {
-      if (!isFinite(x) || !isFinite(y)) return;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    function walk(g) {
-      if (!g) return;
-      if (g.type === 'line') { pt(g.x1, g.y1); pt(g.x2, g.y2); }
-      else if (g.type === 'polyline') g.points.forEach(function (p) { pt(p[0], p[1]); });
-      else if (g.type === 'circle') { pt(g.cx - g.r, g.cy - g.r); pt(g.cx + g.r, g.cy + g.r); }
-      else if (g.type === 'text') { pt(g.x, g.y); pt(g.x + g.str.length * g.h * 0.6, g.y + g.h); }
-      else if (g.type === 'point') pt(g.x, g.y);
-      else if (g.type === 'group') g.items.forEach(walk);
-    }
-    entities.forEach(walk);
-    if (!isFinite(minX)) return { minX: -10, minY: -10, maxX: 10, maxY: 10 };
-    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
-  }
-
   // ---- entity mapping ----
   function colorIndexOf(e) {
     var c = e.colorIndex;
@@ -488,16 +465,39 @@
 
     var ctx = { blocks: blocks, skipped: {} };
     var entities = [];
+    // Accumulate the bounds in the same pass that maps the entities —
+    // a separate bounds walk over hundreds of thousands of entities
+    // would be a second full pass we do not need.
+    var bminX = Infinity, bminY = Infinity, bmaxX = -Infinity, bmaxY = -Infinity;
+    function bpt(x, y) {
+      if (!isFinite(x) || !isFinite(y)) return;
+      if (x < bminX) bminX = x;
+      if (y < bminY) bminY = y;
+      if (x > bmaxX) bmaxX = x;
+      if (y > bmaxY) bmaxY = y;
+    }
+    function bwalk(g) {
+      if (!g) return;
+      if (g.type === 'line') { bpt(g.x1, g.y1); bpt(g.x2, g.y2); }
+      else if (g.type === 'polyline') g.points.forEach(function (p) { bpt(p[0], p[1]); });
+      else if (g.type === 'circle') { bpt(g.cx - g.r, g.cy - g.r); bpt(g.cx + g.r, g.cy + g.r); }
+      else if (g.type === 'text') { bpt(g.x, g.y); bpt(g.x + g.str.length * g.h * 0.6, g.y + g.h); }
+      else if (g.type === 'point') bpt(g.x, g.y);
+      else if (g.type === 'group') g.items.forEach(bwalk);
+    }
     (db.entities || []).forEach(function (e) {
       var g = mapEntity(e, ctx, 0, []);
-      if (g) entities.push(g);
+      if (g) { entities.push(g); bwalk(g); }
     });
+    var bounds = (!isFinite(bminX))
+      ? { minX: -10, minY: -10, maxX: 10, maxY: 10 }
+      : { minX: bminX, minY: bminY, maxX: bmaxX, maxY: bmaxY };
 
     var doc = {
       entities: entities,
       layers: layers,
       layerMap: layerMap,
-      bounds: computeBounds(entities)
+      bounds: bounds
     };
     doc.dwgStats = {
       total: (db.entities || []).length,

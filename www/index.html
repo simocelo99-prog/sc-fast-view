@@ -261,6 +261,13 @@
 <input type="file" id="fileInput" accept=".dxf,.dwg" hidden>
 <input type="file" id="imageInput" accept="image/*" hidden>
 <input type="file" id="audioInput" accept="audio/*" hidden>
+<div class="loading-overlay hidden" id="loadingOverlay">
+  <div class="loading-card">
+    <div class="loading-spinner"></div>
+    <div class="loading-title" id="loadingTitle">جارٍ فتح الملف…</div>
+    <div class="loading-sub" id="loadingSub"></div>
+  </div>
+</div>
 <script src="dxf.js"></script>
 <script src="dwg.js"></script>
 <script src="app.js"></script>

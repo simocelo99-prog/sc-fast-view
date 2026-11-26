@@ -146,16 +146,38 @@
     homeToastTimer = setTimeout(function () { homeToast.style.display = 'none'; }, 4500);
   }
 
+  // Full-screen loading overlay while a DWG opens. A big DWG takes real
+  // time to parse (the engine converts every object), so the user must see
+  // that the app is working — not a home screen with a small toast.
+  function showLoading(name, size) {
+    document.getElementById('loadingTitle').textContent = 'جارٍ فتح ' + (name || 'الملف') + '…';
+    var sub = size ? fmtSize(size) : '';
+    if (size && size > 10 * 1048576) sub += ' — ملف كبير، ممكن ياخد شوية وقت، استنى شوية';
+    document.getElementById('loadingSub').textContent = sub;
+    document.getElementById('loadingOverlay').classList.remove('hidden');
+  }
+  function hideLoading() {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+  }
+
   // ---------- color resolution ----------
+  // Per-frame cache: resolving a color does a layer lookup per entity, and
+  // a huge file has hundreds of thousands of entities. Cleared each render.
+  var colorCache = {};
   function resolveColor(ent) {
+    var key = (ent.color === undefined || ent.color === null ? 256 : ent.color) + '|' + (ent.layer || '0');
+    var cached = colorCache[key];
+    if (cached !== undefined) return cached;
     var c = DXF.aciColor(ent.color, isDarkBg());
-    if (c) return c;
+    if (c) { colorCache[key] = c; return c; }
     var layer = state.doc && state.doc.layerMap ? state.doc.layerMap[ent.layer] : null;
     if (layer) {
       var lc = DXF.aciColor(layer.color, isDarkBg());
-      if (lc) return lc;
+      if (lc) { colorCache[key] = lc; return lc; }
     }
-    return fgColor();
+    var fg = fgColor();
+    colorCache[key] = fg;
+    return fg;
   }
 
   // ---------- transform ----------
@@ -255,6 +277,8 @@
   function fitBounds() {
     var b = state.doc.bounds;
     if (settings.fitAll) return b;
+    // Huge files: the density grid costs more than it helps — plain bounds.
+    if ((state.doc.entities || []).length > 100000) return b;
     var ents = collectFitEntities();
     if (ents.length < 5) return b;
     // size filter: keep entities up to 8x the median entity size
@@ -647,6 +671,7 @@
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
+    colorCache = {};
     ctx.fillStyle = bgColor();
     ctx.fillRect(0, 0, r.width * dpr, r.height * dpr);
     drawGrid();
@@ -724,14 +749,19 @@
     document.getElementById('annotateBar').classList.add('hidden');
     fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
     buildLayersPanel();
-    buildSearchIndex();
+    searchIndex = null; // built lazily on the first search, not at open time
     closeSearchSheet();
     showScreen('viewer');
+    hideLoading();
     loadMarkups(name);
     requestAnimationFrame(function () {
       resize();
       fitView();
-      if (opts.save !== false) saveToLibrary(name, opts.saveData, opts.size || 0, opts.isDwg);
+      if (opts.save !== false) {
+        // Save the file to the library after the viewer is interactive,
+        // so a big (multi-MB) write does not stall the first view.
+        setTimeout(function () { saveToLibrary(name, opts.saveData, opts.size || 0, opts.isDwg); }, 1500);
+      }
     });
     showInfo('اتفتح ' + state.fileName + ' ✓');
   }
@@ -748,14 +778,20 @@
 
   function loadDWG(arrayBuffer, name, opts) {
     opts = opts || {};
-    showHomeToast('جارٍ فتح ملف DWG…');
-    DWG.open(arrayBuffer).then(function (doc) {
-      loadDoc(doc, name, { save: opts.save, size: opts.size || arrayBuffer.byteLength, saveData: arrayBuffer, isDwg: true });
-      if (doc.dwgStats && doc.dwgStats.skipped && Object.keys(doc.dwgStats.skipped).length) {
-        showInfo('اتفتح ' + name + ' ✓ — بعض العناصر (أبعاد، تظليل…) مش مدعومة ومتعرضتش');
-      }
-    }).catch(function (err) {
-      showHomeToast('مش قادر أفتح ملف DWG ده — ' + (err && err.message ? err.message : 'ملف تالف أو نسخة غير مدعومة'));
+    showLoading(name, opts.size || arrayBuffer.byteLength);
+    // Let the loading overlay paint before the heavy parse blocks the thread.
+    requestAnimationFrame(function () {
+      setTimeout(function () {
+        DWG.open(arrayBuffer).then(function (doc) {
+          loadDoc(doc, name, { save: opts.save, size: opts.size || arrayBuffer.byteLength, saveData: arrayBuffer, isDwg: true });
+          if (doc.dwgStats && doc.dwgStats.skipped && Object.keys(doc.dwgStats.skipped).length) {
+            showInfo('اتفتح ' + name + ' ✓ — بعض العناصر (أبعاد، تظليل…) مش مدعومة ومتعرضتش');
+          }
+        }).catch(function (err) {
+          hideLoading();
+          showHomeToast('مش قادر أفتح ملف DWG ده — ' + (err && err.message ? err.message : 'ملف تالف أو نسخة غير مدعومة'));
+        });
+      }, 30);
     });
   }
 
@@ -1139,6 +1175,11 @@
   function unionBox(a, b) {
     return { minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX), minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY) };
   }
+  // Build the search index on first use (not at open time): on a huge file
+  // it is a full pass over every entity, and most opens never search.
+  function ensureSearchIndex() {
+    if (!searchIndex && state.doc) buildSearchIndex();
+  }
   function buildSearchIndex() {
     searchIndex = null;
     if (!state.doc) return;
@@ -1172,6 +1213,7 @@
     q = (q || '').trim().toLowerCase();
     searchResultsEl.innerHTML = '';
     document.getElementById('btnClearSearchViewer').classList.toggle('hidden', !searchInputViewerEl.value);
+    ensureSearchIndex();
     if (!searchIndex) { searchCountEl.textContent = 'مفيش رسمة مفتوحة'; return; }
     if (!q) {
       searchCountEl.textContent = searchIndex.texts.length + ' نص في الرسمة — اكتب كلمة للبحث';
@@ -2187,7 +2229,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.5', code: 21 };
+  var APP_VERSION = { version: '1.6.6', code: 22 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2250,6 +2292,6 @@
     loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
     togglePlayback: togglePlayback, openImageViewer: openImageViewer,
     startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit,
-    checkIntentFile: checkIntentFile
+    checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex
   };
 })();
