@@ -55,9 +55,9 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           APKSIGNER=$(find "$ANDROID_HOME" -name apksigner -type f 2>/dev/null | head -1)
-          FP=$("$APKSIGNER" verify --print-certs "$APK" | grep -i "SHA-256 digest" | head -1)
+          FP=$("$APKSIGNER" verify --print-certs "$APK" | grep -i "SHA-256 digest" | head -1 | tr -d ':' | tr 'A-F' 'a-f')
           echo "APK signer: $FP"
-          echo "$FP" | grep -qi "A0:F5:78:91:26:BA:15:87:7C:D8:E9:6A:D6:7D:F7:2A:1D:18:56:EF:E4:7A:99:8C:74:FA:E0:AE:08:B8:70:88" \
+          echo "$FP" | grep -qi "a0f5789126ba15877cd8e96ad67df72a1d1856efe47a998c74fae0ae08b87088" \
             || { echo "SIGNATURE MISMATCH — APK was not signed with the fixed SC key!"; exit 1; }
 
       - name: Upload APK
