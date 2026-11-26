@@ -38,6 +38,7 @@
     measurePts: [],
     measureTotal: 0,
     selected: null,
+    searchHighlight: null,
     screen: 'home',
     tab: 'recent',
     search: '',
@@ -74,6 +75,10 @@
     document.querySelectorAll('.nav-btn').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-nav') === name);
     });
+    if (name !== 'viewer') {
+      layersSheet.classList.remove('open');
+      if (typeof closeSearchSheet === 'function') closeSearchSheet();
+    }
     if (name === 'viewer') requestAnimationFrame(resize);
     if (name === 'home') renderLibrary();
   }
@@ -389,6 +394,18 @@
     }
   }
 
+  function drawSearchHighlight() {
+    var h = state.searchHighlight;
+    if (!h || Date.now() > h.until) return;
+    var x = w2sx(h.x), y = w2sy(h.y);
+    ctx.strokeStyle = '#4F46E5';
+    ctx.fillStyle = 'rgba(79, 70, 229, .25)';
+    ctx.lineWidth = 2.5 * dpr;
+    ctx.beginPath(); ctx.arc(x, y, 20 * dpr, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x, y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+  }
+
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
@@ -403,6 +420,7 @@
       });
     }
     drawMeasure();
+    drawSearchHighlight();
   }
 
   function fmtNum(n) {
@@ -432,6 +450,8 @@
     state.selected = null;
     fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
     buildLayersPanel();
+    buildSearchIndex();
+    closeSearchSheet();
     showScreen('viewer');
     requestAnimationFrame(function () {
       resize();
@@ -717,6 +737,142 @@
     });
   }
 
+  // ---------- بحث داخل الرسمة (نصوص + طبقات) ----------
+  var searchIndex = null; // { texts: [{str,x,y,layer}], layers: [{name,count,box}] }
+  var searchSheetEl = document.getElementById('searchSheet');
+  var searchInputViewerEl = document.getElementById('searchInputViewer');
+  var searchResultsEl = document.getElementById('searchResults');
+  var searchCountEl = document.getElementById('searchCount');
+
+  function collectTexts(list, out) {
+    list.forEach(function (g) {
+      if (!g) return;
+      if (g.type === 'group') { collectTexts(g.items || [], out); return; }
+      if (g.type === 'text' && g.str && String(g.str).trim() !== '') {
+        out.push({ str: String(g.str), x: g.x, y: g.y, layer: g.layer || '' });
+      }
+    });
+  }
+  function entityBounds(g) {
+    if (!g) return null;
+    if (g.type === 'line') return { minX: Math.min(g.x1, g.x2), maxX: Math.max(g.x1, g.x2), minY: Math.min(g.y1, g.y2), maxY: Math.max(g.y1, g.y2) };
+    if (g.type === 'polyline') {
+      var b = null;
+      (g.points || []).forEach(function (p) {
+        if (!b) b = { minX: p[0], maxX: p[0], minY: p[1], maxY: p[1] };
+        b.minX = Math.min(b.minX, p[0]); b.maxX = Math.max(b.maxX, p[0]);
+        b.minY = Math.min(b.minY, p[1]); b.maxY = Math.max(b.maxY, p[1]);
+      });
+      return b;
+    }
+    if (g.type === 'circle') return { minX: g.cx - g.r, maxX: g.cx + g.r, minY: g.cy - g.r, maxY: g.cy + g.r };
+    if (g.type === 'text' || g.type === 'point') return { minX: g.x, maxX: g.x, minY: g.y, maxY: g.y };
+    if (g.type === 'group') {
+      var u = null;
+      (g.items || []).forEach(function (it) {
+        var ib = entityBounds(it);
+        if (ib) u = u ? unionBox(u, ib) : ib;
+      });
+      return u;
+    }
+    return null;
+  }
+  function unionBox(a, b) {
+    return { minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX), minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY) };
+  }
+  function buildSearchIndex() {
+    searchIndex = null;
+    if (!state.doc) return;
+    var texts = [];
+    collectTexts(state.doc.entities || [], texts);
+    var layers = {};
+    (state.doc.entities || []).forEach(function (g) {
+      var name = g.layer || '0';
+      if (!layers[name]) layers[name] = { name: name, count: 0, box: null };
+      layers[name].count++;
+      var b = entityBounds(g);
+      if (b) layers[name].box = layers[name].box ? unionBox(layers[name].box, b) : b;
+    });
+    var layerList = Object.keys(layers).map(function (k) { return layers[k]; });
+    layerList.sort(function (a, b) { return b.count - a.count; });
+    searchIndex = { texts: texts, layers: layerList };
+  }
+  function closeSearchSheet() { searchSheetEl.classList.remove('open'); }
+  function openSearchSheet() {
+    if (!state.doc) { showInfo('افتح ملف الأول عشان تبحث فيه'); return; }
+    layersSheet.classList.remove('open');
+    searchSheetEl.classList.add('open');
+    runSearch(searchInputViewerEl.value);
+    setTimeout(function () { searchInputViewerEl.focus(); }, 250);
+  }
+  function runSearch(q) {
+    q = (q || '').trim().toLowerCase();
+    searchResultsEl.innerHTML = '';
+    document.getElementById('btnClearSearchViewer').classList.toggle('hidden', !searchInputViewerEl.value);
+    if (!searchIndex) { searchCountEl.textContent = 'مفيش رسمة مفتوحة'; return; }
+    if (!q) {
+      searchCountEl.textContent = searchIndex.texts.length + ' نص في الرسمة — اكتب كلمة للبحث';
+      return;
+    }
+    var textHits = [];
+    for (var i = 0; i < searchIndex.texts.length && textHits.length < 50; i++) {
+      if (searchIndex.texts[i].str.toLowerCase().indexOf(q) !== -1) textHits.push(searchIndex.texts[i]);
+    }
+    var layerHits = [];
+    for (var j = 0; j < searchIndex.layers.length && layerHits.length < 10; j++) {
+      var L = searchIndex.layers[j];
+      if (L.box && L.name.toLowerCase().indexOf(q) !== -1) layerHits.push(L);
+    }
+    var total = textHits.length + layerHits.length;
+    searchCountEl.textContent = total ? ('لقيت ' + total + ' نتيجة') : 'مفيش نتائج مطابقة';
+    if (!total) {
+      var hint = document.createElement('div');
+      hint.className = 'search-hint';
+      hint.textContent = 'جرّب كلمة تانية — مثال: TB019';
+      searchResultsEl.appendChild(hint);
+      return;
+    }
+    textHits.forEach(function (t) {
+      var row = document.createElement('button');
+      row.className = 'search-result';
+      row.innerHTML = '<span class="res-ico">🔤</span><span class="res-text">' + escapeHtml(t.str) + '</span><span class="res-sub">' + escapeHtml(t.layer) + '</span>';
+      row.addEventListener('click', function () { jumpToPoint(t.x, t.y, t.str); });
+      searchResultsEl.appendChild(row);
+    });
+    layerHits.forEach(function (L) {
+      var row = document.createElement('button');
+      row.className = 'search-result';
+      row.innerHTML = '<span class="res-ico">🧱</span><span class="res-text">' + escapeHtml(L.name) + '</span><span class="res-sub">طبقة • ' + L.count + ' عنصر</span>';
+      row.addEventListener('click', function () { fitToBox(L.box); });
+      searchResultsEl.appendChild(row);
+    });
+  }
+  function jumpToPoint(x, y, label) {
+    var r = canvas.parentElement.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    var targetScale = Math.max(state.scale, r.width / 60);
+    state.scale = targetScale;
+    state.ox = r.width / 2 - x * state.scale;
+    state.oy = r.height / 2 + y * state.scale;
+    state.searchHighlight = { x: x, y: y, until: Date.now() + 3500 };
+    closeSearchSheet();
+    render();
+    setTimeout(render, 3600);
+    if (label) showHomeToast('📍 ' + label);
+  }
+  function fitToBox(b) {
+    var r = canvas.parentElement.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    var bw = Math.max(b.maxX - b.minX, 0.001);
+    var bh = Math.max(b.maxY - b.minY, 0.001);
+    state.scale = Math.min(r.width / bw, r.height / bh) * 0.92;
+    var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+    state.ox = r.width / 2 - cx * state.scale;
+    state.oy = r.height / 2 + cy * state.scale;
+    closeSearchSheet();
+    render();
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -885,7 +1041,17 @@
   document.getElementById('btnOpenHome').addEventListener('click', openFilePicker);
   document.getElementById('btnDemoHome').addEventListener('click', loadDemo);
   document.getElementById('btnFab').addEventListener('click', openFilePicker);
-  document.getElementById('btnDemo2').addEventListener('click', loadDemo);
+  document.getElementById('btnSearch').addEventListener('click', function () {
+    if (searchSheetEl.classList.contains('open')) closeSearchSheet();
+    else openSearchSheet();
+  });
+  document.getElementById('btnCloseSearch').addEventListener('click', closeSearchSheet);
+  searchInputViewerEl.addEventListener('input', function () { runSearch(searchInputViewerEl.value); });
+  document.getElementById('btnClearSearchViewer').addEventListener('click', function () {
+    searchInputViewerEl.value = '';
+    runSearch('');
+    searchInputViewerEl.focus();
+  });
   document.getElementById('btnFit').addEventListener('click', fitView);
   document.getElementById('btnZoomIn').addEventListener('click', function () {
     var r = canvas.parentElement.getBoundingClientRect();
@@ -975,7 +1141,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.4.2', code: 11 };
+  var APP_VERSION = { version: '1.5.0', code: 12 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 

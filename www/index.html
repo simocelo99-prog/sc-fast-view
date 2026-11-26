@@ -86,14 +86,30 @@
     <div id="layersList"></div>
   </div>
 
+  <div class="search-sheet" id="searchSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <span>🔍 بحث في الرسمة</span>
+      <button class="icon-btn" id="btnCloseSearch">✕</button>
+    </div>
+    <div class="search-input-row">
+      <span class="search-ico">🔍</span>
+      <input id="searchInputViewer" type="text" placeholder="اكتب نص… مثال: TB019" autocomplete="off">
+      <button class="icon-btn hidden" id="btnClearSearchViewer" title="مسح">✕</button>
+    </div>
+    <div class="search-count" id="searchCount">اكتب كلمة للبحث في نصوص الرسمة والطبقات</div>
+    <div class="search-results" id="searchResults"></div>
+  </div>
+
   <footer class="toolbar">
-    <button class="tool-btn" id="btnDemo2">🏠 تجريبي</button>
-    <button class="tool-btn" id="btnLayers">🧱 الطبقات</button>
-    <button class="tool-btn" id="btnMeasure">📏 قياس</button>
-    <button class="tool-btn hidden" id="btnClearMeasure">🗑️ مسح القياس</button>
-    <button class="tool-btn" id="btnFit">⛶ ملاءمة</button>
-    <button class="tool-btn" id="btnZoomOut">−</button>
-    <button class="tool-btn" id="btnZoomIn">+</button>
+    <button class="tool-btn" id="btnSearch"><span class="tool-ico">🔍</span><span class="tool-label">بحث</span></button>
+    <button class="tool-btn" id="btnLayers"><span class="tool-ico">🧱</span><span class="tool-label">الطبقات</span></button>
+    <button class="tool-btn" id="btnMeasure"><span class="tool-ico">📏</span><span class="tool-label">قياس</span></button>
+    <button class="tool-btn hidden" id="btnClearMeasure"><span class="tool-ico">🗑️</span><span class="tool-label">مسح القياس</span></button>
+    <button class="tool-btn" id="btnFit"><span class="tool-ico">⛶</span><span class="tool-label">ملاءمة</span></button>
+    <span class="tool-sep"></span>
+    <button class="tool-btn zoom" id="btnZoomOut"><span class="tool-ico">−</span></button>
+    <button class="tool-btn zoom" id="btnZoomIn"><span class="tool-ico">+</span></button>
   </footer>
 </section>
 
