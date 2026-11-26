@@ -292,40 +292,38 @@
       var fb = state.doc.bounds;
       if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'percentile'; return; }
       b = fitBounds(); kind = 'percentile';
-      // v1.7.0 proved the percentile box is NOT the plan here: it frames
-      // the fiber zone (3.62M x 3.37M units — the bulk of the entities),
-      // while the site plan (buildings, roads) is sparse but spread over
-      // the full 38.6M bounds. The percentile does its job; the job is
-      // wrong for this file. So: if a substantial number of entities lie
-      // entirely outside the percentile box, that outer content is the
-      // real plan — frame the whole drawing instead, like DWG FastView
-      // (Zoom Extents). A handful of strays (below the threshold) are
-      // still ignored, so one far-out entity cannot shrink the plan.
+      // The percentile box frames where the bulk of the geometry is. Only
+      // fall back to the full bounds when a SUBSTANTIAL fraction of the
+      // drawing lies outside it — that is the sign the plan really is
+      // spread over the whole drawing. A handful of far-out entities
+      // must not drag the fit out to the inflated full bounds: on the
+      // cabinet file only 35 of 3730 entities lie outside the percentile
+      // box (0.9%), and framing the full 38.6M bounds makes the whole
+      // plan a tiny cluster (the tiny pass plots ~130 pixels there,
+      // still nearly blank). The earlier v1.7.1 rule used a tiny
+      // threshold (4 entities), so those 35 strays wrongly forced full
+      // bounds. The bulk of the plan — buildings and fiber zone — lives
+      // inside the percentile box; with the sub-pixel detail pass the
+      // buildings are visible there too.
       var outside = countOutside(b);
       state.fitOutside = outside;
       var total = (state.doc.entities || []).length;
-      var need = Math.max(4, Math.floor(total * 0.001));
+      var need = Math.max(20, Math.floor(total * 0.10));
       if (outside >= need) {
         b = fb; kind = 'full';
       } else {
         var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
-        var fbArea = (fb.maxX - fb.minX) * (fb.maxY - fb.minY);
         var sv = savedViewBounds();
-        if (cbArea < fbArea * 0.5) {
-          // the percentile fit found a concentrated region: show the whole plan
-          // there. Use the saved view only when it frames a substantial part
-          // of that region (a tiny saved window is a detail view, not the plan).
-          if (sv) {
-            var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
-            var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
-            if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
-          }
-        } else if (sv) {
-          // percentile did not concentrate (uniform file) — the saved view is
-          // the better guess; otherwise the full bounds below.
-          b = sv; kind = 'saved';
-        } else {
-          b = fb; kind = 'full';
+        if (sv) {
+          var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
+          var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
+          // Use the saved view only when it frames a substantial part of
+          // the percentile region (a tiny saved window is a detail view,
+          // not the plan). Otherwise the percentile box is the fit: when
+          // the content is spread out it already frames the whole plan
+          // (its corners are within the 1%-99% range), and when it is
+          // concentrated it frames the concentrated region.
+          if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
         }
       }
     }
@@ -733,6 +731,98 @@
     });
   }
 
+  // ---------- sub-pixel detail pass ----------
+  // At a low zoom (e.g. the full-bounds overview of the 29MB cabinet
+  // file), the drawing is made of millions of tiny entities — 99.995%
+  // of its 2.6M leaves are smaller than 1000 units, each far below one
+  // device pixel. The normal path skips them (isTooSmall), so the screen
+  // is blank even though the file loads fine and the fit is correct.
+  // DWG FastView draws them as 1px lines, so the plan reads as a dense
+  // drawing. This pass plots every sub-pixel entity as a single device
+  // pixel into an ImageData buffer (one putImageData per frame), so the
+  // plan is visible at overview zoom without millions of canvas calls.
+  // It only runs at low zoom and only when no gesture is in progress
+  // (during a pan/pinch the fast path draws, and the detail returns
+  // when the gesture ends — see endPointer).
+  var tinyImg = null, tinyImgW = 0, tinyImgH = 0;
+  var tinyColorCache = {};
+  function hslToRgb(h, s, l) {
+    s /= 100; l /= 100;
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    var m = l - c / 2, r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+  }
+  function cssToRgb(css) {
+    var c = tinyColorCache[css];
+    if (c) return c;
+    var m;
+    if (css.charAt(0) === '#') {
+      var h = css.slice(1);
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      c = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    } else if ((m = /rgba?\(([^)]+)\)/.exec(css))) {
+      var p = m[1].split(',');
+      c = [parseFloat(p[0]) | 0, parseFloat(p[1]) | 0, parseFloat(p[2]) | 0];
+    } else if ((m = /hsla?\(([^)]+)\)/.exec(css))) {
+      var q = m[1].split(',');
+      c = hslToRgb(parseFloat(q[0]), parseFloat(q[1]), parseFloat(q[2]));
+    } else {
+      c = [0, 0, 0];
+    }
+    tinyColorCache[css] = c;
+    return c;
+  }
+  function drawTinyPixels(x0, y0, x1, y1) {
+    if (!state.doc || !state.doc.entities) return;
+    // only at low zoom: zoomed in, the normal path draws the detail
+    if (state.scale * dpr >= 0.01) return;
+    // skip while a gesture is in progress (panning/pinching) — the fast
+    // path draws, and the detail returns when the gesture ends
+    if (typeof pointers !== 'undefined' && pointers.size > 0) return;
+    var cw = canvas.width, ch = canvas.height;
+    if (!cw || !ch) return;
+    if (!tinyImg || tinyImgW !== cw || tinyImgH !== ch) {
+      tinyImg = ctx.createImageData(cw, ch);
+      tinyImgW = cw; tinyImgH = ch;
+    }
+    if (!tinyImg || !tinyImg.data) return;
+    var buf32 = new Uint32Array(tinyImg.data.buffer);
+    buf32.fill(0); // transparent
+    var scale = state.scale;
+    function plot(g) {
+      if (!g || g._deleted) return;
+      if (g.type === 'group') {
+        // skip a whole group whose bounds lie outside the view
+        var gb = entityBounds(g);
+        if (gb && (gb.maxX < x0 || gb.minX > x1 || gb.maxY < y0 || gb.minY > y1)) return;
+        g.items.forEach(plot);
+        return;
+      }
+      if (state.hiddenLayers[g.layer]) return;
+      if (g.type === 'text' || g.type === 'point') return;
+      var b = entityBounds(g);
+      if (!b) return;
+      if (b.maxX < x0 || b.minX > x1 || b.maxY < y0 || b.minY > y1) return;
+      // only sub-pixel entities (both dims < 2 device px) — larger ones
+      // are drawn by the normal path
+      if ((b.maxX - b.minX) * scale * dpr >= 2 || (b.maxY - b.minY) * scale * dpr >= 2) return;
+      var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+      var px = Math.round(w2sx(cx)), py = Math.round(w2sy(cy));
+      if (px < 0 || py < 0 || px >= cw || py >= ch) return;
+      var rgb = cssToRgb(resolveColor(g));
+      buf32[py * cw + px] = (255 << 24) | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0];
+    }
+    state.doc.entities.forEach(plot);
+    ctx.putImageData(tinyImg, 0, 0);
+  }
+
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
@@ -760,6 +850,9 @@
         if (settings.fastRender && !entityVisible(g, x0, y0, x1, y1)) return;
         drawEntity(g);
       });
+      // sub-pixel detail: at overview zoom the plan is millions of tiny
+      // entities that the normal path skips — plot them as pixels
+      drawTinyPixels(x0, y0, x1, y1);
     }
     drawMeasure();
     drawSearchHighlight();
@@ -1707,6 +1800,7 @@
   function endPointer(e) {
     if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
     if (pointers.size === 0) {
+      var rendered = false;
       if (state.currentStroke) {
         var s = state.currentStroke;
         state.currentStroke = null;
@@ -1715,7 +1809,7 @@
           pushUndo({ type: 'add-stroke', item: s });
           saveMarkups();
         }
-        render();
+        render(); rendered = true;
       } else if (state.pendingArrow) {
         var ar = state.pendingArrow;
         state.pendingArrow = null;
@@ -1724,7 +1818,7 @@
           pushUndo({ type: 'add-arrow', item: ar });
           saveMarkups();
         }
-        render();
+        render(); rendered = true;
       } else if (state.pendingBox) {
         var bx = state.pendingBox;
         state.pendingBox = null;
@@ -1735,7 +1829,7 @@
           pushUndo({ type: 'add-revcloud', item: cloud });
           saveMarkups();
         }
-        render();
+        render(); rendered = true;
       } else if (state.editDrag) {
         var d = state.editDrag;
         state.editDrag = null;
@@ -1744,11 +1838,14 @@
         }
         state.editMoveArmed = false;
         updateEditBar();
-        render();
+        render(); rendered = true;
       } else if (downPos && Date.now() - downTime < 400 && moved < 12) {
         var r = canvas.getBoundingClientRect();
         handleTap(s2wx(e.clientX - r.left), s2wy(e.clientY - r.top));
       }
+      // A pan/pinch ends here: the sub-pixel detail pass is skipped
+      // while dragging, so do a final full render to bring it back.
+      if (!rendered && moved > 12) requestRender();
     }
     if (pointers.size < 2) pinchStart = 0;
     downPos = null;
@@ -2379,7 +2476,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.3', code: 29 };
+  var APP_VERSION = { version: '1.7.4', code: 30 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2444,6 +2541,7 @@
     startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit,
     checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex,
     entityBounds: entityBounds, isTooSmall: isTooSmall, requestRender: requestRender,
-    showFileInfo: showFileInfo, closeInfoSheet: closeInfoSheet, buildInfoSheet: buildInfoSheet
+    showFileInfo: showFileInfo, closeInfoSheet: closeInfoSheet, buildInfoSheet: buildInfoSheet,
+    drawTinyPixels: drawTinyPixels, cssToRgb: cssToRgb
   };
 })();
