@@ -66,13 +66,13 @@
 <!-- ============ VIEWER SCREEN ============ -->
 <section id="screenViewer" class="screen hidden">
   <header class="topbar">
-    <button class="icon-btn" id="btnBack" title="رجوع">→</button>
+    <button class="icon-btn" id="btnBack" title="رجوع" aria-label="رجوع"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></button>
     <div class="filename" id="fileName">مفيش ملف مفتوح</div>
-    <button class="icon-btn" id="btnUndo" title="تراجع">↩️</button>
-    <button class="icon-btn" id="btnRedo" title="إعادة">↪️</button>
-    <button class="icon-btn" id="btnSearch" title="بحث في الرسمة">🔍</button>
-    <button class="icon-btn" id="btnFit" title="ملاءمة">⛶</button>
-    <button class="icon-btn" id="btnTheme" title="فاتح / غامق">🌙</button>
+    <button class="icon-btn" id="btnUndo" title="تراجع" aria-label="تراجع"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+    <button class="icon-btn" id="btnRedo" title="إعادة" aria-label="إعادة"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+    <button class="icon-btn" id="btnSearch" title="بحث في الرسمة" aria-label="بحث في الرسمة"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></button>
+    <button class="icon-btn" id="btnFit" title="ملاءمة" aria-label="ملاءمة"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    <button class="icon-btn" id="btnTheme" title="فاتح / غامق" aria-label="فاتح / غامق"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg></button>
   </header>
 
   <main class="stage" id="stage">
@@ -104,6 +104,14 @@
       <button class="sub-btn" data-sub="revcloud"><span class="sub-ico">☁️</span><span class="sub-label">سحابة</span></button>
       <button class="sub-btn" data-sub="recording"><span class="sub-ico">🎙️</span><span class="sub-label">تسجيل</span></button>
       <button class="sub-btn" data-sub="image"><span class="sub-ico">🖼️</span><span class="sub-label">صورة</span></button>
+    </div>
+    <div class="unit-picker hidden" id="unitPicker">
+      <span class="unit-title">وحدة الرسمة:</span>
+      <button class="unit-btn active" data-unit="m">متر</button>
+      <button class="unit-btn" data-unit="mm">مم</button>
+      <button class="unit-btn" data-unit="cm">سم</button>
+      <button class="unit-btn" data-unit="ft">قدم</button>
+      <button class="unit-btn" data-unit="in">بوصة</button>
     </div>
     <div class="record-bar hidden" id="recordBar">
       <span class="record-dot">🔴</span><span id="recordTimer">0:00</span>

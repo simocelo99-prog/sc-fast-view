@@ -17,13 +17,14 @@
   var dpr = Math.max(1, window.devicePixelRatio || 1);
 
   // ---------- settings (persisted) ----------
-  var settings = { bg: 'black', lineweight: false, fastRender: true, fitAll: false };
+  var settings = { bg: 'black', lineweight: false, fastRender: true, fitAll: false, measureUnit: 'm' };
   try {
     var saved = JSON.parse(localStorage.getItem('scfv-settings') || '{}');
     if (saved.bg) settings.bg = saved.bg;
     if (typeof saved.lineweight === 'boolean') settings.lineweight = saved.lineweight;
     if (typeof saved.fastRender === 'boolean') settings.fastRender = saved.fastRender;
     if (typeof saved.fitAll === 'boolean') settings.fitAll = saved.fitAll;
+    if (saved.measureUnit) settings.measureUnit = saved.measureUnit;
   } catch (e) { /* ignore */ }
   function saveSettings() {
     try { localStorage.setItem('scfv-settings', JSON.stringify(settings)); } catch (e) { /* ignore */ }
@@ -413,7 +414,7 @@
     ctx.stroke();
     if (state.measurePts.length >= 2) {
       var last = state.measurePts[state.measurePts.length - 1];
-      var label = fmtNum(state.measureTotal) + ' وحدة';
+      var label = fmtDist(state.measureTotal);
       ctx.font = 'bold ' + Math.round(14 * dpr) + 'px sans-serif';
       var tw = ctx.measureText(label).width;
       var lx = w2sx(last[0]) + 10 * dpr, ly = w2sy(last[1]) - 10 * dpr;
@@ -473,7 +474,7 @@
     arrowHead(x1, y1, ang + Math.PI);
     arrowHead(x2, y2, ang);
     // distance text (constant screen size) in a dark pill
-    var label = fmtNum(d.dist) + ' وحدة';
+    var label = fmtDist(d.dist);
     ctx.font = 'bold ' + Math.round(12 * dpr) + 'px sans-serif';
     var tw = ctx.measureText(label).width;
     var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
@@ -662,6 +663,11 @@
   function fmtNum(n) {
     return (Math.round(n * 100) / 100).toLocaleString('en-US');
   }
+  // Measurement units: the drawing's base unit, converted to meters
+  // for display (the user asked for distances in meters).
+  var UNIT_TO_M = { m: 1, mm: 0.001, cm: 0.01, ft: 0.3048, in: 0.0254 };
+  function toMeters(d) { return d * (UNIT_TO_M[settings.measureUnit] || 1); }
+  function fmtDist(d) { return fmtNum(toMeters(d)) + ' م'; }
   function fmtSize(bytes) {
     if (bytes >= 1048576) return (Math.round(bytes / 1048576 * 100) / 100) + 'MB';
     if (bytes >= 1024) return Math.round(bytes / 1024) + 'KB';
@@ -1126,11 +1132,15 @@
     layerList.sort(function (a, b) { return b.count - a.count; });
     searchIndex = { texts: texts, layers: layerList };
   }
-  function closeSearchSheet() { searchSheetEl.classList.remove('open'); }
+  function closeSearchSheet() {
+    searchSheetEl.classList.remove('open');
+    document.getElementById('btnSearch').classList.remove('active');
+  }
   function openSearchSheet() {
     if (!state.doc) { showInfo('افتح ملف الأول عشان تبحث فيه'); return; }
     layersSheet.classList.remove('open');
     searchSheetEl.classList.add('open');
+    document.getElementById('btnSearch').classList.add('active');
     runSearch(searchInputViewerEl.value);
     setTimeout(function () { searchInputViewerEl.focus(); }, 250);
   }
@@ -1273,7 +1283,7 @@
       }
       measureLabel.textContent = state.measurePts.length < 2
         ? 'دوس على نقطة تانية'
-        : 'المسافة: ' + fmtNum(state.measureTotal) + ' وحدة — دوس تاني عشان تكمّل';
+        : 'المسافة: ' + fmtDist(state.measureTotal) + ' — دوس تاني عشان تكمّل';
       render();
       return;
     }
@@ -1288,7 +1298,7 @@
         state.dimensions.push(dim);
         pushUndo({ type: 'add-dimension', item: dim });
         state.dimPending = null;
-        measureLabel.textContent = 'البُعد: ' + fmtNum(dim.dist) + ' وحدة';
+        measureLabel.textContent = 'البُعد: ' + fmtDist(dim.dist);
         saveMarkups();
       }
       render();
@@ -1759,22 +1769,50 @@
   var recordBarEl = document.getElementById('recordBar');
   var recordPlayBarEl = document.getElementById('recordPlayBar');
 
-  // Recording order: (1) the native recorder (Android MediaRecorder through
-  // our own Capacitor plugin — the only path that works on this phone,
-  // because the WebView's mic fails with NotReadableError even though the
-  // permission is granted), (2) the WebView mic (getUserMedia), (3) attach
-  // an existing audio file from the phone's voice recorder app.
-  function nativeRecorder() {
-    try {
-      if (window.Capacitor && window.Capacitor.isPluginAvailable &&
-          window.Capacitor.isPluginAvailable('VoiceRecorder') &&
-          window.Capacitor.registerPlugin) {
-        return window.Capacitor.registerPlugin('VoiceRecorder');
-      }
-    } catch (e) { /* fall through to the WebView mic */ }
-    return null;
+  // Call the native VoiceRecorder plugin. First try Capacitor's low-level
+  // nativePromise directly: it routes by plugin name and does NOT depend on
+  // PluginHeaders (which may not list a manually registered plugin). If that
+  // is unavailable, fall back to the registerPlugin proxy.
+  function callRecorder(method, options) {
+    var cap = window.Capacitor;
+    if (cap && typeof cap.nativePromise === 'function') {
+      return cap.nativePromise('VoiceRecorder', method, options || {});
+    }
+    if (cap && cap.registerPlugin) {
+      var VR = cap.registerPlugin('VoiceRecorder');
+      if (VR && typeof VR[method] === 'function') return VR[method](options || {});
+    }
+    return Promise.reject(new Error('no native recorder'));
   }
 
+  function startRecordingAt(wx, wy) {
+    if (state.recording) { stopRecording(); return; }
+    // try the native recorder first; if it is not available, the call
+    // rejects and startNativeRecording falls back to the WebView mic
+    startNativeRecording(wx, wy);
+  }
+
+  function startNativeRecording(wx, wy) {
+    callRecorder('hasPermission').then(function (res) {
+      if (res && res.granted) return true;
+      return callRecorder('requestPermission').then(function (r2) { return !!(r2 && r2.granted); });
+    }).then(function (granted) {
+      if (!granted) {
+        showHomeToast('التسجيل محتاج إذن الميكروفون');
+        state.pendingAudioPoint = { x: wx, y: wy };
+        document.getElementById('audioInput').click();
+        return;
+      }
+      return callRecorder('startRecording').then(function () {
+        var rec = { native: true, point: [wx, wy], startTime: Date.now(), secs: 0, timer: null };
+        state.recording = rec;
+        showRecordBar(rec);
+      });
+    }).catch(function () {
+      // native path failed — fall back to the WebView mic
+      startWebRecording(wx, wy);
+    });
+  }
   function showRecordBar(rec) {
     recordBarEl.classList.remove('hidden');
     document.getElementById('recordTimer').textContent = '0:00';
@@ -1784,35 +1822,6 @@
         Math.floor(rec.secs / 60) + ':' + ('0' + (rec.secs % 60)).slice(-2);
       if (rec.secs >= 60) stopRecording(); // cap: 60 seconds per note
     }, 500);
-  }
-
-  function startRecordingAt(wx, wy) {
-    if (state.recording) { stopRecording(); return; }
-    var VR = nativeRecorder();
-    if (VR) { startNativeRecording(VR, wx, wy); return; }
-    startWebRecording(wx, wy);
-  }
-
-  function startNativeRecording(VR, wx, wy) {
-    VR.hasPermission().then(function (res) {
-      if (res && res.granted) return true;
-      return VR.requestPermission().then(function (r2) { return !!(r2 && r2.granted); });
-    }).then(function (granted) {
-      if (!granted) {
-        showHomeToast('التسجيل محتاج إذن الميكروفون');
-        state.pendingAudioPoint = { x: wx, y: wy };
-        document.getElementById('audioInput').click();
-        return;
-      }
-      return VR.startRecording().then(function () {
-        var rec = { native: true, plugin: VR, point: [wx, wy], startTime: Date.now(), secs: 0, timer: null };
-        state.recording = rec;
-        showRecordBar(rec);
-      });
-    }).catch(function () {
-      // native path failed — fall back to the WebView mic
-      startWebRecording(wx, wy);
-    });
   }
 
   function startWebRecording(wx, wy) {
@@ -1891,7 +1900,7 @@
     recordBarEl.classList.add('hidden');
     state.recording = null;
     if (rec.native) {
-      rec.plugin.stopRecording().then(function (res) {
+      callRecorder('stopRecording').then(function (res) {
         var item = {
           x: rec.point[0], y: rec.point[1],
           audio: 'data:' + (res.mimeType || 'audio/mp4') + ';base64,' + res.recordDataBase64,
@@ -1999,6 +2008,28 @@
     }
   });
 
+  // --- measurement unit (the drawing's base unit; distances display in meters) ---
+  function setMeasureUnit(u) {
+    settings.measureUnit = u;
+    saveSettings();
+    document.querySelectorAll('#unitPicker .unit-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-unit') === u);
+    });
+    if (state.measurePts.length >= 2) {
+      measureLabel.textContent = 'المسافة: ' + fmtDist(state.measureTotal) + ' — دوس تاني عشان تكمّل';
+    } else if (state.dimensions.length > 0) {
+      measureLabel.textContent = 'البُعد: ' + fmtDist(state.dimensions[state.dimensions.length - 1].dist);
+    }
+    render();
+  }
+  document.querySelectorAll('#unitPicker .unit-btn').forEach(function (b) {
+    b.addEventListener('click', function () { setMeasureUnit(b.getAttribute('data-unit')); });
+  });
+  // mark the saved unit as active on load
+  document.querySelectorAll('#unitPicker .unit-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-unit') === settings.measureUnit);
+  });
+
   function setTool(t) {
     if (t === state.tool) t = null;
     // clear the previous tool's transient state
@@ -2026,6 +2057,8 @@
     } else {
       document.getElementById('annotateBar').classList.add('hidden');
     }
+    // unit picker shows only while measuring or dimensioning
+    document.getElementById('unitPicker').classList.toggle('hidden', !(t === 'measure' || t === 'dimension'));
     document.getElementById('btnAnnotate').classList.toggle('active', t === 'annotate');
     document.getElementById('btnDraw').classList.toggle('active', t === 'draw');
     document.getElementById('btnEdit').classList.toggle('active', t === 'edit');
@@ -2129,7 +2162,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.3', code: 19 };
+  var APP_VERSION = { version: '1.6.4', code: 20 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2190,6 +2223,6 @@
     translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo, pushUndo: pushUndo,
     loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
     togglePlayback: togglePlayback, openImageViewer: openImageViewer,
-    startRecordingAt: startRecordingAt
+    startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit
   };
 })();
