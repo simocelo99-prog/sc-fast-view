@@ -220,7 +220,15 @@
     var xs = [], ys = [];
     (state.doc.entities || []).forEach(function (g) {
       var eb = entityBounds(g);
-      if (eb) { xs.push(eb.minX, eb.maxX); ys.push(eb.minY, eb.maxY); }
+      // Skip entities with non-finite bounds. A single corrupt entity
+      // (NaN/Infinity coordinates) would otherwise poison the percentile
+      // box — and a NaN box makes the scale NaN, which blanks the whole
+      // screen even though the file loads fine. dwg.js already skips
+      // non-finite values when it computes the document bounds; the fit
+      // must do the same.
+      if (eb && isFinite(eb.minX) && isFinite(eb.maxX) && isFinite(eb.minY) && isFinite(eb.maxY)) {
+        xs.push(eb.minX, eb.maxX); ys.push(eb.minY, eb.maxY);
+      }
     });
     if (xs.length < 10) return b;
     xs.sort(function (a, c) { return a - c; });
@@ -341,9 +349,26 @@
     var bw = Math.max(b.maxX - b.minX, 0.001);
     var bh = Math.max(b.maxY - b.minY, 0.001);
     state.scale = Math.min(r.width / bw, r.height / bh) * 0.92;
+    // Never leave the view with a broken scale (NaN/zero — e.g. from a
+    // corrupt entity): fall back to the full document bounds, and if even
+    // that is broken, leave the previous view alone instead of blanking
+    // the screen. A broken scale makes every entity draw at NaN
+    // coordinates (invisible) while the grid still draws.
+    if (!isFinite(state.scale) || state.scale <= 0) {
+      var db = state.doc.bounds;
+      if (db && isFinite(db.minX) && isFinite(db.maxX) && isFinite(db.minY) && isFinite(db.maxY)) {
+        b = db; kind = 'full'; state.fitKind = 'full'; state.fitBox = b;
+        bw = Math.max(b.maxX - b.minX, 0.001); bh = Math.max(b.maxY - b.minY, 0.001);
+        state.scale = Math.min(r.width / bw, r.height / bh) * 0.92;
+      }
+      if (!isFinite(state.scale) || state.scale <= 0) return;
+    }
     var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
     state.ox = r.width / 2 - cx * state.scale;
     state.oy = r.height / 2 + cy * state.scale;
+    // guard the offsets too — a NaN offset hides everything just like a
+    // NaN scale does
+    if (!isFinite(state.ox) || !isFinite(state.oy)) return;
     render();
   }
 
@@ -712,16 +737,18 @@
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
     // Safety net: if a file is loaded but the view was never fitted
-    // (fitView bailed while the viewer was not laid out yet), the
-    // default view (scale 1, origin 0,0) shows an empty region for
-    // files whose content is far from the origin — a blank screen.
-    // Fit now; fitView renders, so return here. (A fit that already
-    // ran sets ox/oy/scale, so this only fires for a never-fitted view.)
+    // (fitView bailed while the viewer was not laid out yet), or the
+    // view is left with a broken scale (NaN/zero — e.g. from a corrupt
+    // entity), the default/broken view shows an empty region for files
+    // whose content is far from the origin — a blank screen. Fit now;
+    // fitView renders, so return here. (A fit that already ran sets
+    // ox/oy/scale, so this only fires for a never-fitted or broken view.)
     var fb2 = state.doc && state.doc.bounds;
-    if (state.doc && fb2 && isFinite(fb2.minX) && isFinite(fb2.maxX) && isFinite(fb2.minY) && isFinite(fb2.maxY) &&
-        state.scale === 1 && state.ox === 0 && state.oy === 0) {
+    var viewBroken = !isFinite(state.scale) || state.scale <= 0 ||
+      (state.scale === 1 && state.ox === 0 && state.oy === 0);
+    if (state.doc && fb2 && isFinite(fb2.minX) && isFinite(fb2.maxX) && isFinite(fb2.minY) && isFinite(fb2.maxY) && viewBroken) {
       fitView();
-      if (state.scale !== 1 || state.ox !== 0 || state.oy !== 0) return;
+      if (isFinite(state.scale) && state.scale > 0) return;
     }
     colorCache = {};
     ctx.fillStyle = bgColor();
@@ -1231,6 +1258,11 @@
     if (state.fitOutside != null) {
       html += infoRow('عناصر خارج منطقة العرض', state.fitOutside);
     }
+    // live view scale — the number that decides whether anything is
+    // visible at all (a NaN or 0 scale blanks the screen even though
+    // the file loads fine). Shown raw on purpose: if the fit is broken,
+    // this row says so.
+    html += infoRow('مقياس العرض', isFinite(state.scale) ? state.scale.toExponential(2) : String(state.scale));
     html += infoRow('عدد الطبقات', (doc.layers || []).length);
     infoListEl.innerHTML = html;
   }
@@ -2347,7 +2379,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.2', code: 28 };
+  var APP_VERSION = { version: '1.7.3', code: 29 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
