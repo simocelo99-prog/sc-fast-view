@@ -120,8 +120,13 @@
   // ---------- transform ----------
   function w2sx(x) { return (x * state.scale + state.ox) * dpr; }
   function w2sy(y) { return (-y * state.scale + state.oy) * dpr; }
-  function s2wx(px) { return (px / dpr - state.ox) / state.scale; }
-  function s2wy(py) { return -(py / dpr - state.oy) / state.scale; }
+  // Screen (CSS px) -> world. All callers pass CSS pixels (clientX/clientY,
+  // getBoundingClientRect), so there is NO /dpr here: w2sx/w2sy already
+  // convert the other way (world -> device px). Dividing by dpr here shrank
+  // the fast-render culling rect on phones with dpr>1 and culled most of
+  // the drawing — that is why B2.dwg rendered only in the top part.
+  function s2wx(px) { return (px - state.ox) / state.scale; }
+  function s2wy(py) { return -(py - state.oy) / state.scale; }
 
   // Fit the main drawing. Real fiber drawings have a dense plan plus long
   // sparse routes running far away — fitting the full bounds shrinks the plan
@@ -888,7 +893,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.3.3', code: 7 };
+  var APP_VERSION = { version: '1.3.4', code: 8 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
