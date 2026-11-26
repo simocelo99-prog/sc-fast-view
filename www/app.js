@@ -108,6 +108,7 @@
     if (name !== 'viewer') {
       layersSheet.classList.remove('open');
       if (typeof closeSearchSheet === 'function') closeSearchSheet();
+      if (typeof closeInfoSheet === 'function') closeInfoSheet();
       if (typeof setTool === 'function') setTool(null);
     }
     if (name === 'viewer') requestAnimationFrame(resize);
@@ -126,6 +127,10 @@
   });
   document.getElementById('btnBack').addEventListener('click', function () { showScreen('home'); });
   document.getElementById('btnBackSettings').addEventListener('click', function () { showScreen('home'); });
+  // Tapping the file name opens the file-info sheet (what the parser found,
+  // what was skipped, bounds, saved view, fit used) — the diagnostic view
+  // for "the drawing looks incomplete" reports.
+  fileNameEl.addEventListener('click', function () { showFileInfo(); });
 
   // App toast (created dynamically). It must live on document.body, not
   // inside the home screen: a toast shown while the user is in Settings (or
@@ -321,7 +326,9 @@
 
   function fitView() {
     if (!state.doc) return;
-    var b = (!settings.fitAll && savedViewBounds()) || fitBounds();
+    var sv = (!settings.fitAll && savedViewBounds());
+    state.fitKind = sv ? 'saved' : (settings.fitAll ? 'full' : 'density');
+    var b = sv || fitBounds();
     // an empty or bound-less file has nothing to fit — leave the view alone
     if (!b || !isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minY) || !isFinite(b.maxY)) return;
     var r = canvas.parentElement.getBoundingClientRect();
@@ -741,6 +748,7 @@
     opts = opts || {};
     state.doc = doc;
     state.fileName = name || 'رسم بدون اسم';
+    state.fileSize = opts.size || 0;
     // Cache every entity's bounds once (cheap math, one pass) so per-frame
     // culling and the sub-pixel skip are O(1) instead of re-scanning points.
     (doc.entities || []).forEach(function (g) { entityBounds(g); });
@@ -1161,6 +1169,57 @@
       });
       layersList.appendChild(row);
     });
+  }
+
+  // ---------- معلومات الملف (تشخيص: دوس على اسم الملف فوق) ----------
+  // Shows what the parser actually found in the open file — mapped
+  // entities, skipped types with counts, drawing bounds, saved view, and
+  // which fit was used. This is how a "the drawing looks incomplete"
+  // report is diagnosed in the field: the numbers say whether content was
+  // skipped (e.g. fills), or the fit zoomed to the wrong region.
+  var infoSheetEl = document.getElementById('infoSheet');
+  var infoListEl = document.getElementById('infoList');
+  function infoRow(k, v) {
+    return '<div class="info-row"><span class="info-k">' + escapeHtml(k) + '</span>' +
+      '<span class="info-v">' + escapeHtml(String(v)) + '</span></div>';
+  }
+  function buildInfoSheet() {
+    if (!infoListEl || !state.doc) return;
+    var doc = state.doc;
+    var html = '';
+    html += infoRow('الملف', state.fileName || '');
+    html += infoRow('الحجم', state.fileSize ? fmtSize(state.fileSize) : '—');
+    html += infoRow('عناصر معروضة', (doc.entities || []).length);
+    if (doc.dwgStats) {
+      html += infoRow('إجمالي عناصر الملف', doc.dwgStats.total);
+      var sk = doc.dwgStats.skipped || {};
+      var keys = Object.keys(sk).sort(function (a, b) { return sk[b] - sk[a]; });
+      if (keys.length) {
+        html += infoRow('عناصر متخطية (مش مدعومة)', keys.slice(0, 8).map(function (k) {
+          return k + ': ' + sk[k];
+        }).join('، '));
+      } else {
+        html += infoRow('عناصر متخطية (مش مدعومة)', 'مفيش — كل حاجة اتعرضت');
+      }
+    }
+    var b = doc.bounds;
+    if (b && isFinite(b.minX)) {
+      html += infoRow('أبعاد الرسمة', fmtNum(b.maxX - b.minX) + ' × ' + fmtNum(b.maxY - b.minY));
+    }
+    html += infoRow('العرض المحفوظ في الملف', doc.savedView ? 'موجود (ارتفاع ' + fmtNum(doc.savedView.height) + ')' : 'مفيش');
+    html += infoRow('الملاءمة المستخدمة', state.fitKind === 'saved' ? 'العرض المحفوظ' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أكثف منطقة');
+    html += infoRow('عدد الطبقات', (doc.layers || []).length);
+    infoListEl.innerHTML = html;
+  }
+  function showFileInfo() {
+    if (!state.doc) return;
+    closeSearchSheet();
+    layersSheet.classList.remove('open');
+    buildInfoSheet();
+    infoSheetEl.classList.add('open');
+  }
+  function closeInfoSheet() {
+    if (infoSheetEl) infoSheetEl.classList.remove('open');
   }
 
   // ---------- بحث داخل الرسمة (نصوص + طبقات) ----------
@@ -1670,6 +1729,7 @@
     else openSearchSheet();
   });
   document.getElementById('btnCloseSearch').addEventListener('click', closeSearchSheet);
+  document.getElementById('btnCloseInfo').addEventListener('click', closeInfoSheet);
   searchInputViewerEl.addEventListener('input', function () { runSearch(searchInputViewerEl.value); });
   document.getElementById('btnClearSearchViewer').addEventListener('click', function () {
     searchInputViewerEl.value = '';
@@ -2264,7 +2324,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.7', code: 23 };
+  var APP_VERSION = { version: '1.6.8', code: 24 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2328,6 +2388,7 @@
     togglePlayback: togglePlayback, openImageViewer: openImageViewer,
     startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit,
     checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex,
-    entityBounds: entityBounds, isTooSmall: isTooSmall, requestRender: requestRender
+    entityBounds: entityBounds, isTooSmall: isTooSmall, requestRender: requestRender,
+    showFileInfo: showFileInfo, closeInfoSheet: closeInfoSheet, buildInfoSheet: buildInfoSheet
   };
 })();

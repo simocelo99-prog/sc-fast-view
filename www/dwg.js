@@ -19,7 +19,9 @@
    Entity types match app.js: line, polyline, circle, text, point, group.
    Colors are ACI numbers so DXF.aciColor() resolves them like the DXF path.
    Not supported (skipped, counted in doc.dwgStats.skipped): DIMENSION,
-   HATCH, XLINE, RAY, SOLID, 3DFACE, IMAGE, LEADER, MLEADER, TABLE, etc.
+   XLINE, RAY, SOLID, 3DFACE, IMAGE, LEADER, MLEADER, TABLE, etc.
+   HATCH is rendered as its boundary outlines (the fill itself is not
+   stored as geometry, so the outline is what other viewers show too).
    Block entities are stored relative to the block base point in the file,
    same convention as dxf.js and the package's own SVG converter, so the
    base point is NOT subtracted on INSERT (matches dxf.js behaviour). */
@@ -222,6 +224,78 @@
     return String(s || '').replace(/\\P/g, '\n').replace(/\\[A-Za-z][^;]*;/g, '');
   }
 
+  // HATCH: the fill itself is not stored as geometry, but the boundary
+  // paths carry the visible shape (a building footprint, a road fill...).
+  // Render the boundary as stroked polylines — that is what other viewers
+  // show as the outline. Edge types come from libredwg-web's
+  // DwgBoundaryPathEdgeType enum: 1 = Line, 2 = Circular, 3 = Elliptic,
+  // 4 = Spline (the converter assigns the numeric values).
+  function hatchEdgePoints(edge) {
+    if (!edge) return null;
+    var t = edge.type;
+    if (t === 1 || t === 'Line') {
+      if (!edge.start || !edge.end) return null;
+      return [[edge.start.x, edge.start.y], [edge.end.x, edge.end.y]];
+    }
+    if (t === 2 || t === 'Circular') {
+      var r = num(edge.radius, 0);
+      if (!edge.center || !(r > 0)) return null;
+      var a1 = num(edge.startAngle, 0), a2 = num(edge.endAngle, Math.PI * 2);
+      // a clockwise arc has the same point set as the counter-clockwise
+      // arc from end to start — stroked outlines do not care about direction
+      if (edge.isCCW === false) { var tmp = a1; a1 = a2; a2 = tmp; }
+      if (Math.abs(a2 - a1) < 1e-9) a2 = a1 + Math.PI * 2; // full circle
+      return arcPointsRad(edge.center.x, edge.center.y, r, a1, a2);
+    }
+    if (t === 3 || t === 'Elliptic') {
+      if (!edge.center || !edge.end) return null;
+      var vx = edge.end.x - edge.center.x, vy = edge.end.y - edge.center.y;
+      if (Math.hypot(vx, vy) < 1e-9) return null;
+      var ea1 = num(edge.startAngle, 0), ea2 = num(edge.endAngle, Math.PI * 2);
+      if (edge.isCCW === false) { var tmp2 = ea1; ea1 = ea2; ea2 = tmp2; }
+      if (Math.abs(ea2 - ea1) < 1e-9) ea2 = ea1 + Math.PI * 2;
+      return ellipsePoints(edge.center.x, edge.center.y, vx, vy,
+        num(edge.lengthOfMinorAxis, 1), ea1, ea2);
+    }
+    if (t === 4 || t === 'Spline') {
+      if (edge.fitDatum && edge.fitDatum.length >= 2) {
+        return edge.fitDatum.map(function (p) { return [p.x, p.y]; });
+      }
+      if (edge.controlPoints && edge.controlPoints.length >= 2) {
+        return bsplinePoints(edge.controlPoints, num(edge.degree, 3), edge.knots, null);
+      }
+      return null;
+    }
+    return null;
+  }
+
+  function hatchToGroup(e, base, ctx) {
+    var paths = e.boundaryPaths || [];
+    var items = [];
+    paths.forEach(function (p) {
+      if (!p) return;
+      if (p.vertices && p.vertices.length >= 2) {
+        var pl = polylineFromVertices(p.vertices, !!p.isClosed, base);
+        if (pl) items.push(pl);
+        return;
+      }
+      (p.edges || []).forEach(function (edge) {
+        var pts = hatchEdgePoints(edge);
+        if (pts && pts.length >= 2) {
+          items.push({
+            type: 'polyline', layer: base.layer, color: base.color,
+            points: pts, closed: false
+          });
+        }
+      });
+    });
+    if (!items.length) {
+      ctx.skipped['HATCH:no-boundary'] = (ctx.skipped['HATCH:no-boundary'] || 0) + 1;
+      return null;
+    }
+    return { type: 'group', layer: base.layer, color: base.color, items: items };
+  }
+
   function polylineFromVertices(verts, closed, base) {
     if (!verts || verts.length < 2) return null;
     var out = [];
@@ -371,6 +445,8 @@
       case 'POINT':
         if (!e.position) return null;
         return Object.assign(base, { type: 'point', x: e.position.x, y: e.position.y });
+      case 'HATCH':
+        return hatchToGroup(e, base, ctx);
       case 'INSERT':
         return expandInsert(e, ctx, depth, stack);
       default:
@@ -556,4 +632,7 @@
   }
 
   root.DWG = { open: open };
+  // Test hook (Node harness only): the raw entity mapper, so synthetic
+  // entities (HATCH, INSERT, ...) can be verified without a real DWG file.
+  root.DWG._test = { mapEntity: mapEntity };
 })(typeof self !== 'undefined' ? self : globalThis);
