@@ -738,13 +738,18 @@
   // device pixel. The normal path skips them (isTooSmall), so the screen
   // is blank even though the file loads fine and the fit is correct.
   // DWG FastView draws them as 1px lines, so the plan reads as a dense
-  // drawing. This pass plots every sub-pixel entity as a single device
-  // pixel into an ImageData buffer (one putImageData per frame), so the
-  // plan is visible at overview zoom without millions of canvas calls.
+  // drawing. This pass plots every sub-pixel entity as a visible dot.
+  // It MUST draw with fillRect (which composites ON TOP of the canvas).
+  // An earlier version used putImageData with a mostly-transparent
+  // ImageData buffer — but putImageData REPLACES the pixels (it does
+  // not blend), so the transparent buffer ERASED the background, the
+  // grid and every line the normal path had just drawn, leaving a blank
+  // screen on the phone (v1.7.4 failed in the field for exactly this
+  // reason, while the Node harness — whose putImageData stub was a
+  // no-op — showed the plan fine). fillRect adds the dots on top.
   // It only runs at low zoom and only when no gesture is in progress
   // (during a pan/pinch the fast path draws, and the detail returns
   // when the gesture ends — see endPointer).
-  var tinyImg = null, tinyImgW = 0, tinyImgH = 0;
   var tinyColorCache = {};
   function hslToRgb(h, s, l) {
     s /= 100; l /= 100;
@@ -788,13 +793,9 @@
     if (typeof pointers !== 'undefined' && pointers.size > 0) return;
     var cw = canvas.width, ch = canvas.height;
     if (!cw || !ch) return;
-    if (!tinyImg || tinyImgW !== cw || tinyImgH !== ch) {
-      tinyImg = ctx.createImageData(cw, ch);
-      tinyImgW = cw; tinyImgH = ch;
-    }
-    if (!tinyImg || !tinyImg.data) return;
-    var buf32 = new Uint32Array(tinyImg.data.buffer);
-    buf32.fill(0); // transparent
+    // collect distinct device pixels (first color wins if several
+    // entities land on the same pixel)
+    var pixels = new Map();
     var scale = state.scale;
     function plot(g) {
       if (!g || g._deleted) return;
@@ -816,11 +817,28 @@
       var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
       var px = Math.round(w2sx(cx)), py = Math.round(w2sy(cy));
       if (px < 0 || py < 0 || px >= cw || py >= ch) return;
-      var rgb = cssToRgb(resolveColor(g));
-      buf32[py * cw + px] = (255 << 24) | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0];
+      var key = py * cw + px;
+      if (!pixels.has(key)) pixels.set(key, cssToRgb(resolveColor(g)));
     }
     state.doc.entities.forEach(plot);
-    ctx.putImageData(tinyImg, 0, 0);
+    if (!pixels.size) return;
+    // draw the dots, batched by color (one fillStyle per color).
+    // 2x2 device px so a dot stays visible on high-dpr phones.
+    var byColor = new Map();
+    pixels.forEach(function (rgb, key) {
+      var k = rgb[0] + ',' + rgb[1] + ',' + rgb[2];
+      var arr = byColor.get(k);
+      if (!arr) { arr = []; byColor.set(k, arr); }
+      arr.push(key);
+    });
+    byColor.forEach(function (arr, k) {
+      var p = k.split(',');
+      ctx.fillStyle = 'rgb(' + p[0] + ',' + p[1] + ',' + p[2] + ')';
+      for (var i = 0; i < arr.length; i++) {
+        var key = arr[i];
+        ctx.fillRect(key % cw, (key / cw) | 0, 2, 2);
+      }
+    });
   }
 
   function render() {
@@ -2476,7 +2494,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.4', code: 30 };
+  var APP_VERSION = { version: '1.7.5', code: 31 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
