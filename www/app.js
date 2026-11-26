@@ -255,6 +255,18 @@
     return box;
   }
 
+  // How many entities lie entirely outside a box (their bbox does not
+  // touch it at all). Used by fitView: a few strays outside the fit box
+  // are junk to ignore, but a substantial number means the outer content
+  // is real plan content (buildings, roads spread over the site), not junk.
+  function countOutside(box) {
+    var n = 0;
+    (state.doc.entities || []).forEach(function (g) {
+      var eb = entityBounds(g);
+      if (eb && (eb.maxX < box.minX || eb.minX > box.maxX || eb.maxY < box.minY || eb.minY > box.maxY)) n++;
+    });
+    return n;
+  }
   function fitView() {
     if (!state.doc) return;
     var b, kind;
@@ -271,24 +283,41 @@
       var fb = state.doc.bounds;
       if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'percentile'; return; }
       b = fitBounds(); kind = 'percentile';
-      var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
-      var fbArea = (fb.maxX - fb.minX) * (fb.maxY - fb.minY);
-      var sv = savedViewBounds();
-      if (cbArea < fbArea * 0.5) {
-        // the percentile fit found a concentrated region: show the whole plan
-        // there. Use the saved view only when it frames a substantial part
-        // of that region (a tiny saved window is a detail view, not the plan).
-        if (sv) {
-          var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
-          var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
-          if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
-        }
-      } else if (sv) {
-        // percentile did not concentrate (uniform file) — the saved view is
-        // the better guess; otherwise the full bounds below.
-        b = sv; kind = 'saved';
-      } else {
+      // v1.7.0 proved the percentile box is NOT the plan here: it frames
+      // the fiber zone (3.62M x 3.37M units — the bulk of the entities),
+      // while the site plan (buildings, roads) is sparse but spread over
+      // the full 38.6M bounds. The percentile does its job; the job is
+      // wrong for this file. So: if a substantial number of entities lie
+      // entirely outside the percentile box, that outer content is the
+      // real plan — frame the whole drawing instead, like DWG FastView
+      // (Zoom Extents). A handful of strays (below the threshold) are
+      // still ignored, so one far-out entity cannot shrink the plan.
+      var outside = countOutside(b);
+      state.fitOutside = outside;
+      var total = (state.doc.entities || []).length;
+      var need = Math.max(4, Math.floor(total * 0.001));
+      if (outside >= need) {
         b = fb; kind = 'full';
+      } else {
+        var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
+        var fbArea = (fb.maxX - fb.minX) * (fb.maxY - fb.minY);
+        var sv = savedViewBounds();
+        if (cbArea < fbArea * 0.5) {
+          // the percentile fit found a concentrated region: show the whole plan
+          // there. Use the saved view only when it frames a substantial part
+          // of that region (a tiny saved window is a detail view, not the plan).
+          if (sv) {
+            var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
+            var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
+            if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
+          }
+        } else if (sv) {
+          // percentile did not concentrate (uniform file) — the saved view is
+          // the better guess; otherwise the full bounds below.
+          b = sv; kind = 'saved';
+        } else {
+          b = fb; kind = 'full';
+        }
       }
     }
     state.fitKind = kind;
@@ -1176,6 +1205,9 @@
     html += infoRow('الملاءمة المستخدمة', state.fitKind === 'saved' ? 'العرض المحفوظ' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أغلب الرسمة');
     if (state.fitBox && isFinite(state.fitBox.minX)) {
       html += infoRow('منطقة العرض', fmtNum(state.fitBox.maxX - state.fitBox.minX) + ' × ' + fmtNum(state.fitBox.maxY - state.fitBox.minY));
+    }
+    if (state.fitOutside != null) {
+      html += infoRow('عناصر خارج منطقة العرض', state.fitOutside);
     }
     html += infoRow('عدد الطبقات', (doc.layers || []).length);
     infoListEl.innerHTML = html;
@@ -2293,7 +2325,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.0', code: 26 };
+  var APP_VERSION = { version: '1.7.1', code: 27 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
