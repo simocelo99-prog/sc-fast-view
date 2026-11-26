@@ -297,8 +297,20 @@
     }
     var box = denseBox(kept, b, 0.05);
     if (!box) return b;
-    var refined = denseBox(kept, box, 0.01);
-    if (refined) box = refined;
+    // Re-grid inside the dense box until it stops shrinking: a fixed 25x25
+    // grid over huge bounds has cells far larger than the real plan (this
+    // file: 38.6M-unit bounds, 1.5M-unit cells, 3,000-unit plan), so one
+    // pass cannot find the plan. Each pass refines the grid around the
+    // dense region; stop when the box barely shrinks, so we don't zoom
+    // into a single sub-cluster (e.g. just the densest cable bundle).
+    for (var i = 0; i < 4; i++) {
+      var refined = denseBox(kept, box, 0.01);
+      if (!refined) break;
+      var oldW = box.maxX - box.minX, oldH = box.maxY - box.minY;
+      box = refined;
+      var newW = box.maxX - box.minX, newH = box.maxY - box.minY;
+      if (newW > oldW * 0.8 && newH > oldH * 0.8) break;
+    }
     // 10% padding around the dense region
     var mx = (box.maxX - box.minX) * 0.1, my = (box.maxY - box.minY) * 0.1;
     var rx0 = Math.max(b.minX, box.minX - mx), rx1 = Math.min(b.maxX, box.maxX + mx);
@@ -308,8 +320,10 @@
   }
 
   // Saved view from the DWG file (*Active VPORT): the framing AutoCAD had
-  // when the file was saved — usually the plan filling the screen. Used as
-  // the initial view when it is sane; otherwise the density fit takes over.
+  // when the file was saved. It is only a fallback now — on this file it is
+  // a 971-unit window inside 38.6M-unit bounds, a zoomed-in detail of the
+  // cable tangle, not the plan. fitView trusts it only when it frames a
+  // substantial part of the density-fit region (see fitView below).
   function savedViewBounds() {
     var sv = state.doc && state.doc.savedView;
     if (!sv || !isFinite(sv.cx) || !isFinite(sv.cy) || !isFinite(sv.height) || !(sv.height > 0)) return null;
@@ -326,9 +340,41 @@
 
   function fitView() {
     if (!state.doc) return;
-    var sv = (!settings.fitAll && savedViewBounds());
-    state.fitKind = sv ? 'saved' : (settings.fitAll ? 'full' : 'density');
-    var b = sv || fitBounds();
+    var b, kind;
+    if (settings.fitAll) {
+      b = state.doc.bounds; kind = 'full';
+    } else {
+      // The density fit finds the plan; the saved view is only a fallback.
+      // The saved view used to win unconditionally, and on this file it is
+      // a 971-unit window inside 38.6M-unit bounds (0.0036% of the drawing
+      // height) — a zoomed-in detail of the cable tangle, not the plan —
+      // so the app opened on the tangle while other viewers show the plan.
+      // (A bound-less file — e.g. an empty DXF opened from another app —
+      // has nothing to fit; leave the view alone.)
+      var fb = state.doc.bounds;
+      if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'density'; return; }
+      b = fitBounds(); kind = 'density';
+      var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
+      var fbArea = (fb.maxX - fb.minX) * (fb.maxY - fb.minY);
+      var sv = savedViewBounds();
+      if (cbArea < fbArea * 0.5) {
+        // the density fit found a concentrated region: show the whole plan
+        // there. Use the saved view only when it frames a substantial part
+        // of that region (a tiny saved window is a detail view, not the plan).
+        if (sv) {
+          var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
+          var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
+          if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
+        }
+      } else if (sv) {
+        // density did not concentrate (uniform file) — the saved view is
+        // the better guess; otherwise the full bounds below.
+        b = sv; kind = 'saved';
+      } else {
+        b = fb; kind = 'full';
+      }
+    }
+    state.fitKind = kind;
     // an empty or bound-less file has nothing to fit — leave the view alone
     if (!b || !isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minY) || !isFinite(b.maxY)) return;
     var r = canvas.parentElement.getBoundingClientRect();
@@ -2324,7 +2370,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.8', code: 24 };
+  var APP_VERSION = { version: '1.6.9', code: 25 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
