@@ -1759,8 +1759,63 @@
   var recordBarEl = document.getElementById('recordBar');
   var recordPlayBarEl = document.getElementById('recordPlayBar');
 
+  // Recording order: (1) the native recorder (Android MediaRecorder through
+  // our own Capacitor plugin — the only path that works on this phone,
+  // because the WebView's mic fails with NotReadableError even though the
+  // permission is granted), (2) the WebView mic (getUserMedia), (3) attach
+  // an existing audio file from the phone's voice recorder app.
+  function nativeRecorder() {
+    try {
+      if (window.Capacitor && window.Capacitor.isPluginAvailable &&
+          window.Capacitor.isPluginAvailable('VoiceRecorder') &&
+          window.Capacitor.registerPlugin) {
+        return window.Capacitor.registerPlugin('VoiceRecorder');
+      }
+    } catch (e) { /* fall through to the WebView mic */ }
+    return null;
+  }
+
+  function showRecordBar(rec) {
+    recordBarEl.classList.remove('hidden');
+    document.getElementById('recordTimer').textContent = '0:00';
+    rec.timer = setInterval(function () {
+      rec.secs = Math.floor((Date.now() - rec.startTime) / 1000);
+      document.getElementById('recordTimer').textContent =
+        Math.floor(rec.secs / 60) + ':' + ('0' + (rec.secs % 60)).slice(-2);
+      if (rec.secs >= 60) stopRecording(); // cap: 60 seconds per note
+    }, 500);
+  }
+
   function startRecordingAt(wx, wy) {
     if (state.recording) { stopRecording(); return; }
+    var VR = nativeRecorder();
+    if (VR) { startNativeRecording(VR, wx, wy); return; }
+    startWebRecording(wx, wy);
+  }
+
+  function startNativeRecording(VR, wx, wy) {
+    VR.hasPermission().then(function (res) {
+      if (res && res.granted) return true;
+      return VR.requestPermission().then(function (r2) { return !!(r2 && r2.granted); });
+    }).then(function (granted) {
+      if (!granted) {
+        showHomeToast('التسجيل محتاج إذن الميكروفون');
+        state.pendingAudioPoint = { x: wx, y: wy };
+        document.getElementById('audioInput').click();
+        return;
+      }
+      return VR.startRecording().then(function () {
+        var rec = { native: true, plugin: VR, point: [wx, wy], startTime: Date.now(), secs: 0, timer: null };
+        state.recording = rec;
+        showRecordBar(rec);
+      });
+    }).catch(function () {
+      // native path failed — fall back to the WebView mic
+      startWebRecording(wx, wy);
+    });
+  }
+
+  function startWebRecording(wx, wy) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       showHomeToast('التسجيل الصوتي مش متاح على الجهاز ده');
       return;
@@ -1790,14 +1845,7 @@
       };
       state.recording = rec;
       mr.start();
-      recordBarEl.classList.remove('hidden');
-      document.getElementById('recordTimer').textContent = '0:00';
-      rec.timer = setInterval(function () {
-        rec.secs = Math.floor((Date.now() - rec.startTime) / 1000);
-        document.getElementById('recordTimer').textContent =
-          Math.floor(rec.secs / 60) + ':' + ('0' + (rec.secs % 60)).slice(-2);
-        if (rec.secs >= 60) stopRecording(); // cap: 60 seconds per note
-      }, 500);
+      showRecordBar(rec);
     }).catch(function (err) {
       // Show the real error so the next report names it, then fall back to
       // attaching an existing recording (e.g. from the phone's voice
@@ -1842,6 +1890,22 @@
     clearInterval(rec.timer);
     recordBarEl.classList.add('hidden');
     state.recording = null;
+    if (rec.native) {
+      rec.plugin.stopRecording().then(function (res) {
+        var item = {
+          x: rec.point[0], y: rec.point[1],
+          audio: 'data:' + (res.mimeType || 'audio/mp4') + ';base64,' + res.recordDataBase64,
+          dur: Math.round((res.msDuration || 0) / 1000)
+        };
+        state.recordings.push(item);
+        pushUndo({ type: 'add-recording', item: item });
+        saveMarkups();
+        render();
+      }).catch(function () {
+        showHomeToast('التسجيل كان قصير أوي — جرّب تاني');
+      });
+      return;
+    }
     try { if (rec.recorder.state !== 'inactive') rec.recorder.stop(); } catch (e) { /* ignore */ }
   }
   document.getElementById('btnStopRecord').addEventListener('click', stopRecording);
@@ -2065,7 +2129,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.2', code: 18 };
+  var APP_VERSION = { version: '1.6.3', code: 19 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 

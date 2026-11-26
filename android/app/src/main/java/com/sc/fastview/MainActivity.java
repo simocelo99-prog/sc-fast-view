@@ -27,6 +27,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Register the native voice recorder before the bridge is created.
+        registerPlugin(VoiceRecorderPlugin.class);
         super.onCreate(savedInstanceState);
         if (getBridge() == null) return;
         WebView webView = getBridge().getWebView();
