@@ -21,19 +21,18 @@ android {
         // in-app updates install over the old version instead of failing
         // with a signature mismatch. Without this, each runner generates
         // its own debug key and every update needs an uninstall first.
+        // Values come from Gradle properties (-P flags in the workflow).
         scfastview {
-            storeFile file(System.getenv("KEYSTORE_PATH") ?: "sc-fast-view.keystore")
+            storeFile file(findProperty("KEYSTORE_PATH") ?: "sc-fast-view.keystore")
             storeType "PKCS12"
-            storePassword System.getenv("KEYSTORE_PASSWORD")
-            keyAlias System.getenv("KEY_ALIAS") ?: "scfastview"
-            keyPassword System.getenv("KEY_PASSWORD")
+            storePassword findProperty("KEYSTORE_PASSWORD")
+            keyAlias findProperty("KEY_ALIAS") ?: "scfastview"
+            keyPassword findProperty("KEY_PASSWORD")
         }
     }
     buildTypes {
         debug {
-            if (System.getenv("KEYSTORE_PATH")) {
-                signingConfig signingConfigs.scfastview
-            }
+            signingConfig signingConfigs.scfastview
         }
         release {
             minifyEnabled false
