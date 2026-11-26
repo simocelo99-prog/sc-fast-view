@@ -28,14 +28,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.SC_KEYSTORE_B64 }}
+        run: echo "$KEYSTORE_B64" | base64 -d > sc-fast-view.keystore
+
       - name: Sync Capacitor Android
-        # NOTE (v1.4.2): the DWG engine MUST stay bundled in the APK.
+        # NOTE (v1.5.2): the DWG engine MUST stay bundled in the APK.
         # v1.4.1 removed it to make the APK small, but then the app had to
         # download the 8 MB engine on first DWG open — on a slow connection
         # that download fails and DWG files stop opening. Reliability wins.
         run: npx cap sync android
 
       - name: Build debug APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/sc-fast-view.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.SC_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SC_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SC_KEY_PASSWORD }}
         run: cd android && ./gradlew assembleDebug
 
       - name: Upload APK
