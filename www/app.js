@@ -198,120 +198,37 @@
 
   // Fit the main drawing. Real fiber drawings have a dense plan plus long
   // sparse routes running far away — fitting the full bounds shrinks the plan
-  // into a corner. Two ideas make the fit find the plan:
-  //  1. Size filter: drop entities far larger than the typical entity (the
-  //     long routes) from the fit computation. They stay in the drawing.
-  //  2. Two-stage density grid: a coarse 25x25 grid finds the dense region,
-  //     then a finer grid inside it tightens the box, so the box is not stuck
-  //     at one coarse cell wide. Counting is per-entity (each entity counts
-  //     once per cell it touches).
-  function collectFitEntities() {
-    var entities = [];
-    function ptsFor(g) {
-      var pts = [];
-      function pt(x, y) { if (isFinite(x) && isFinite(y)) pts.push([x, y]); }
-      if (g.type === 'line') { pt(g.x1, g.y1); pt(g.x2, g.y2); }
-      else if (g.type === 'polyline') {
-        var step = g.points.length > 200 ? Math.ceil(g.points.length / 200) : 1;
-        for (var k = 0; k < g.points.length; k += step) pt(g.points[k][0], g.points[k][1]);
-      }
-      else if (g.type === 'circle') { pt(g.cx - g.r, g.cy - g.r); pt(g.cx + g.r, g.cy + g.r); }
-      else if (g.type === 'text' || g.type === 'point') pt(g.x, g.y);
-      return pts;
-    }
-    function walk(g) {
-      if (!g) return;
-      if (g.type === 'group') { g.items.forEach(walk); return; }
-      var pts = ptsFor(g);
-      if (pts.length) entities.push(pts);
-    }
-    state.doc.entities.forEach(walk);
-    return entities;
-  }
-  function entitySize(pts) {
-    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    pts.forEach(function (p) {
-      if (p[0] < x0) x0 = p[0];
-      if (p[1] < y0) y0 = p[1];
-      if (p[0] > x1) x1 = p[0];
-      if (p[1] > y1) y1 = p[1];
-    });
-    return Math.max(x1 - x0, y1 - y0);
-  }
-  // Bounding box of the cells holding at least `frac` of the densest cell's
-  // entity count, over the given bounds. Returns null when nothing qualifies.
-  function denseBox(ents, b, frac) {
-    var GX = 25, GY = 25;
-    var bw = b.maxX - b.minX, bh = b.maxY - b.minY;
-    if (!(bw > 0) || !(bh > 0)) return null;
-    var counts = new Array(GX * GY);
-    for (var c = 0; c < counts.length; c++) counts[c] = 0;
-    var maxC = 0;
-    ents.forEach(function (pts) {
-      var seen = {};
-      pts.forEach(function (p) {
-        var cx = Math.min(GX - 1, Math.max(0, Math.floor((p[0] - b.minX) / bw * GX)));
-        var cy = Math.min(GY - 1, Math.max(0, Math.floor((p[1] - b.minY) / bh * GY)));
-        var idx = cy * GX + cx;
-        if (!seen[idx]) {
-          seen[idx] = 1;
-          counts[idx]++;
-          if (counts[idx] > maxC) maxC = counts[idx];
-        }
-      });
-    });
-    if (!maxC) return null;
-    var threshold = Math.max(2, Math.ceil(maxC * frac));
-    var x0 = GX, x1 = -1, y0 = GY, y1 = -1, any = false;
-    for (var j = 0; j < GX * GY; j++) {
-      if (counts[j] >= threshold) {
-        var gx = j % GX, gy = Math.floor(j / GX);
-        if (gx < x0) x0 = gx;
-        if (gx > x1) x1 = gx;
-        if (gy < y0) y0 = gy;
-        if (gy > y1) y1 = gy;
-        any = true;
-      }
-    }
-    if (!any) return null;
-    return {
-      minX: b.minX + (x0 / GX) * bw, maxX: b.minX + ((x1 + 1) / GX) * bw,
-      minY: b.minY + (y0 / GY) * bh, maxY: b.minY + ((y1 + 1) / GY) * bh
-    };
-  }
+  // into a corner. (An earlier density-grid fit was removed: it finds the
+  // DENSEST cluster, and on the 29MB file that is the cable tangle, not the
+  // plan — v1.6.9 still opened on the tangle for exactly this reason.)
   function fitBounds() {
     var b = state.doc.bounds;
     if (settings.fitAll) return b;
     // Huge files: the density grid costs more than it helps — plain bounds.
     if ((state.doc.entities || []).length > 100000) return b;
-    var ents = collectFitEntities();
-    if (ents.length < 5) return b;
-    // size filter: keep entities up to 8x the median entity size
-    var sizes = ents.map(entitySize).sort(function (a, c) { return a - c; });
-    var median = sizes[Math.floor(sizes.length / 2)] || 0;
-    var kept = ents;
-    if (median > 0) {
-      var limit = median * 8;
-      kept = ents.filter(function (pts) { return entitySize(pts) <= limit; });
-      if (kept.length < 5) kept = ents;
-    }
-    var box = denseBox(kept, b, 0.05);
-    if (!box) return b;
-    // Re-grid inside the dense box until it stops shrinking: a fixed 25x25
-    // grid over huge bounds has cells far larger than the real plan (this
-    // file: 38.6M-unit bounds, 1.5M-unit cells, 3,000-unit plan), so one
-    // pass cannot find the plan. Each pass refines the grid around the
-    // dense region; stop when the box barely shrinks, so we don't zoom
-    // into a single sub-cluster (e.g. just the densest cable bundle).
-    for (var i = 0; i < 4; i++) {
-      var refined = denseBox(kept, box, 0.01);
-      if (!refined) break;
-      var oldW = box.maxX - box.minX, oldH = box.maxY - box.minY;
-      box = refined;
-      var newW = box.maxX - box.minX, newH = box.maxY - box.minY;
-      if (newW > oldW * 0.8 && newH > oldH * 0.8) break;
-    }
-    // 10% padding around the dense region
+    // Percentile bounds (1%-99%) over each entity's bounding-box corners:
+    // frame where the bulk of the geometry is. The density grid was the
+    // wrong tool here — it finds the DENSEST cluster, and on this file that
+    // is the 971-unit cable tangle, so v1.6.9 still opened on the tangle.
+    // Percentiles do not care how dense a spot is; they just cut off the
+    // far-out minority on each side, so the box covers the plan and the
+    // tangle together. Using bbox corners (2 points per entity) means one
+    // long entity cannot dominate the percentile the way 200 sampled
+    // points along it could, and no size filter is needed — which matters,
+    // because the median entity here is a tiny tangle segment, so a
+    // median-based filter would wrongly drop the plan's own lines.
+    var xs = [], ys = [];
+    (state.doc.entities || []).forEach(function (g) {
+      var eb = entityBounds(g);
+      if (eb) { xs.push(eb.minX, eb.maxX); ys.push(eb.minY, eb.maxY); }
+    });
+    if (xs.length < 10) return b;
+    xs.sort(function (a, c) { return a - c; });
+    ys.sort(function (a, c) { return a - c; });
+    function pct(arr, q) { return arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * q)))]; }
+    var box = { minX: pct(xs, 0.01), maxX: pct(xs, 0.99), minY: pct(ys, 0.01), maxY: pct(ys, 0.99) };
+    if (!(box.maxX > box.minX) || !(box.maxY > box.minY)) return b;
+    // 10% padding around the region
     var mx = (box.maxX - box.minX) * 0.1, my = (box.maxY - box.minY) * 0.1;
     var rx0 = Math.max(b.minX, box.minX - mx), rx1 = Math.min(b.maxX, box.maxX + mx);
     var ry0 = Math.max(b.minY, box.minY - my), ry1 = Math.min(b.maxY, box.maxY + my);
@@ -323,7 +240,7 @@
   // when the file was saved. It is only a fallback now — on this file it is
   // a 971-unit window inside 38.6M-unit bounds, a zoomed-in detail of the
   // cable tangle, not the plan. fitView trusts it only when it frames a
-  // substantial part of the density-fit region (see fitView below).
+  // substantial part of the percentile-fit region (see fitView below).
   function savedViewBounds() {
     var sv = state.doc && state.doc.savedView;
     if (!sv || !isFinite(sv.cx) || !isFinite(sv.cy) || !isFinite(sv.height) || !(sv.height > 0)) return null;
@@ -344,7 +261,7 @@
     if (settings.fitAll) {
       b = state.doc.bounds; kind = 'full';
     } else {
-      // The density fit finds the plan; the saved view is only a fallback.
+      // The percentile fit finds the plan; the saved view is only a fallback.
       // The saved view used to win unconditionally, and on this file it is
       // a 971-unit window inside 38.6M-unit bounds (0.0036% of the drawing
       // height) — a zoomed-in detail of the cable tangle, not the plan —
@@ -352,13 +269,13 @@
       // (A bound-less file — e.g. an empty DXF opened from another app —
       // has nothing to fit; leave the view alone.)
       var fb = state.doc.bounds;
-      if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'density'; return; }
-      b = fitBounds(); kind = 'density';
+      if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'percentile'; return; }
+      b = fitBounds(); kind = 'percentile';
       var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
       var fbArea = (fb.maxX - fb.minX) * (fb.maxY - fb.minY);
       var sv = savedViewBounds();
       if (cbArea < fbArea * 0.5) {
-        // the density fit found a concentrated region: show the whole plan
+        // the percentile fit found a concentrated region: show the whole plan
         // there. Use the saved view only when it frames a substantial part
         // of that region (a tiny saved window is a detail view, not the plan).
         if (sv) {
@@ -367,7 +284,7 @@
           if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
         }
       } else if (sv) {
-        // density did not concentrate (uniform file) — the saved view is
+        // percentile did not concentrate (uniform file) — the saved view is
         // the better guess; otherwise the full bounds below.
         b = sv; kind = 'saved';
       } else {
@@ -375,6 +292,9 @@
       }
     }
     state.fitKind = kind;
+    // remember the box the fit actually chose, so the file-info sheet can
+    // show it (diagnosing a wrong fit from a screenshot needs this number)
+    state.fitBox = b;
     // an empty or bound-less file has nothing to fit — leave the view alone
     if (!b || !isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minY) || !isFinite(b.maxY)) return;
     var r = canvas.parentElement.getBoundingClientRect();
@@ -1253,7 +1173,10 @@
       html += infoRow('أبعاد الرسمة', fmtNum(b.maxX - b.minX) + ' × ' + fmtNum(b.maxY - b.minY));
     }
     html += infoRow('العرض المحفوظ في الملف', doc.savedView ? 'موجود (ارتفاع ' + fmtNum(doc.savedView.height) + ')' : 'مفيش');
-    html += infoRow('الملاءمة المستخدمة', state.fitKind === 'saved' ? 'العرض المحفوظ' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أكثف منطقة');
+    html += infoRow('الملاءمة المستخدمة', state.fitKind === 'saved' ? 'العرض المحفوظ' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أغلب الرسمة');
+    if (state.fitBox && isFinite(state.fitBox.minX)) {
+      html += infoRow('منطقة العرض', fmtNum(state.fitBox.maxX - state.fitBox.minX) + ' × ' + fmtNum(state.fitBox.maxY - state.fitBox.minY));
+    }
     html += infoRow('عدد الطبقات', (doc.layers || []).length);
     infoListEl.innerHTML = html;
   }
@@ -2370,7 +2293,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.9', code: 25 };
+  var APP_VERSION = { version: '1.7.0', code: 26 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
