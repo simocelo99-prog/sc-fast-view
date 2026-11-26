@@ -298,6 +298,8 @@
   function fitView() {
     if (!state.doc) return;
     var b = (!settings.fitAll && savedViewBounds()) || fitBounds();
+    // an empty or bound-less file has nothing to fit — leave the view alone
+    if (!b || !isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minY) || !isFinite(b.maxY)) return;
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
     var bw = Math.max(b.maxX - b.minX, 0.001);
@@ -787,6 +789,28 @@
   fileInput.addEventListener('change', function () {
     handlePickedFile(fileInput.files && fileInput.files[0]);
   });
+
+  // A DWG/DXF opened with the app from another app (WhatsApp, Files, ...):
+  // Android launches us with a VIEW intent; the native IntentFile plugin
+  // reads the file's bytes and name, and we open it like a picked file.
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function checkIntentFile() {
+    callNativePlugin('IntentFile', 'getIntentFile').then(function (res) {
+      if (!res || !res.dataBase64) return;
+      var name = res.name || 'file.dwg';
+      var bytes = base64ToBytes(res.dataBase64);
+      if (/\.dwg$/i.test(name)) {
+        loadDWG(bytes.buffer, name, { size: bytes.length });
+      } else if (/\.dxf$/i.test(name)) {
+        loadDXF(new TextDecoder().decode(bytes), name, { size: bytes.length });
+      }
+    }).catch(function () { /* no intent file — normal launch */ });
+  }
 
   ['dragenter', 'dragover'].forEach(function (ev) {
     document.addEventListener(ev, function (e) { e.preventDefault(); });
@@ -1769,21 +1793,22 @@
   var recordBarEl = document.getElementById('recordBar');
   var recordPlayBarEl = document.getElementById('recordPlayBar');
 
-  // Call the native VoiceRecorder plugin. First try Capacitor's low-level
-  // nativePromise directly: it routes by plugin name and does NOT depend on
-  // PluginHeaders (which may not list a manually registered plugin). If that
-  // is unavailable, fall back to the registerPlugin proxy.
-  function callRecorder(method, options) {
+  // Call a native plugin. First try Capacitor's low-level nativePromise
+  // directly: it routes by plugin name and does NOT depend on PluginHeaders
+  // (which may not list a manually registered plugin). If that is
+  // unavailable, fall back to the registerPlugin proxy.
+  function callNativePlugin(plugin, method, options) {
     var cap = window.Capacitor;
     if (cap && typeof cap.nativePromise === 'function') {
-      return cap.nativePromise('VoiceRecorder', method, options || {});
+      return cap.nativePromise(plugin, method, options || {});
     }
     if (cap && cap.registerPlugin) {
-      var VR = cap.registerPlugin('VoiceRecorder');
-      if (VR && typeof VR[method] === 'function') return VR[method](options || {});
+      var P = cap.registerPlugin(plugin);
+      if (P && typeof P[method] === 'function') return P[method](options || {});
     }
-    return Promise.reject(new Error('no native recorder'));
+    return Promise.reject(new Error('no native plugin'));
   }
+  function callRecorder(method, options) { return callNativePlugin('VoiceRecorder', method, options); }
 
   function startRecordingAt(wx, wy) {
     if (state.recording) { stopRecording(); return; }
@@ -2162,7 +2187,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.4', code: 20 };
+  var APP_VERSION = { version: '1.6.5', code: 21 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2216,6 +2241,7 @@
   openDB().then(function () { loadLibrary(); cacheWasmEngine(); });
   showScreen('home');
   checkForUpdates(false);
+  checkIntentFile(); // open a DWG/DXF shared with the app from another app
 
   // Debug handle for automated checks (harmless in production).
   window.__scfv = {
@@ -2223,6 +2249,7 @@
     translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo, pushUndo: pushUndo,
     loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
     togglePlayback: togglePlayback, openImageViewer: openImageViewer,
-    startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit
+    startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit,
+    checkIntentFile: checkIntentFile
   };
 })();

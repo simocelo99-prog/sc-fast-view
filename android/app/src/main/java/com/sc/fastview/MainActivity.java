@@ -1,6 +1,7 @@
 package com.sc.fastview;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -27,8 +28,10 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // Register the native voice recorder before the bridge is created.
+        // Register the native voice recorder and the intent-file reader
+        // before the bridge is created.
         registerPlugin(VoiceRecorderPlugin.class);
+        registerPlugin(IntentFilePlugin.class);
         super.onCreate(savedInstanceState);
         if (getBridge() == null) return;
         WebView webView = getBridge().getWebView();
@@ -74,6 +77,18 @@ public class MainActivity extends BridgeActivity {
                 return super.onShowFileChooser(view, filePathCallback, fileChooserParams);
             }
         });
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // The app was already running and a DWG/DXF was opened with it from
+        // another app: ask the web app to load the new intent file.
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().evaluateJavascript(
+                "if (window.__scfv && window.__scfv.checkIntentFile) window.__scfv.checkIntentFile();", null);
+        }
     }
 
     @Override

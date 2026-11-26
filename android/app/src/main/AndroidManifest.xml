@@ -22,6 +22,34 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Open DWG/DXF files tapped in other apps (WhatsApp, Files, ...):
+                 the app then shows in Android's "Open with" chooser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/x-acad" />
+                <data android:mimeType="application/dwg" />
+                <data android:mimeType="image/vnd.dwg" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="image/vnd.dxf" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.dwg" />
+                <data android:pathPattern=".*\\.DWG" />
+                <data android:pathPattern=".*\\.dxf" />
+                <data android:pathPattern=".*\\.DXF" />
+            </intent-filter>
+
         </activity>
 
         <provider
