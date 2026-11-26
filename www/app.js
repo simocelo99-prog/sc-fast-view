@@ -43,7 +43,21 @@
     tab: 'recent',
     search: '',
     typeFilter: 'all',
-    library: []
+    library: [],
+    // Professional toolbar tools (like DWG FastView):
+    // null | 'measure' | 'dimension' | 'annotate' | 'draw' | 'edit'
+    tool: null,
+    annotations: [],   // {x, y, text} in world coords — saved per file
+    strokes: [],       // {color, pts: [[x,y],...]} — saved per file
+    dimensions: [],    // {a: [x,y], b: [x,y], dist} — saved per file
+    dimPending: null,
+    drawColor: '#EF4444',
+    currentStroke: null,
+    editMoveArmed: false,
+    editDrag: null,
+    pendingNote: null,
+    undoStack: [],
+    redoStack: []
   };
 
   function isDarkBg() { return settings.bg === 'black'; }
@@ -78,6 +92,7 @@
     if (name !== 'viewer') {
       layersSheet.classList.remove('open');
       if (typeof closeSearchSheet === 'function') closeSearchSheet();
+      if (typeof setTool === 'function') setTool(null);
     }
     if (name === 'viewer') requestAnimationFrame(resize);
     if (name === 'home') renderLibrary();
@@ -308,7 +323,7 @@
 
   // ---------- drawing ----------
   function drawEntity(g) {
-    if (!g) return;
+    if (!g || g._deleted) return;
     if (g.type === 'group') {
       g.items.forEach(drawEntity);
       return;
@@ -406,6 +421,106 @@
     ctx.beginPath(); ctx.arc(x, y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
   }
 
+  // ---------- markup overlays: dimensions, freehand, notes, selection ----------
+  function arrowHead(x, y, ang) {
+    var s = 9 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - s * Math.cos(ang - 0.42), y - s * Math.sin(ang - 0.42));
+    ctx.lineTo(x - s * Math.cos(ang + 0.42), y - s * Math.sin(ang + 0.42));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawDimension(d) {
+    var ax = w2sx(d.a[0]), ay = w2sy(d.a[1]);
+    var bx = w2sx(d.b[0]), by = w2sy(d.b[1]);
+    var dx = bx - ax, dy = by - ay;
+    var len = Math.hypot(dx, dy);
+    if (len < 1) return;
+    var nx = -dy / len, ny = dx / len;
+    var off = 18 * dpr;
+    var x1 = ax + nx * off, y1 = ay + ny * off;
+    var x2 = bx + nx * off, y2 = by + ny * off;
+    var ang = Math.atan2(dy, dx);
+    ctx.strokeStyle = '#38BDF8';
+    ctx.fillStyle = '#38BDF8';
+    ctx.lineWidth = 1.6 * dpr;
+    // extension lines (from the measured points out to the dimension line)
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(x1 + nx * 6 * dpr, y1 + ny * 6 * dpr);
+    ctx.moveTo(bx, by); ctx.lineTo(x2 + nx * 6 * dpr, y2 + ny * 6 * dpr);
+    ctx.stroke();
+    // dimension line + arrowheads at both ends
+    ctx.beginPath();
+    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    ctx.stroke();
+    arrowHead(x1, y1, ang + Math.PI);
+    arrowHead(x2, y2, ang);
+    // distance text (constant screen size) in a dark pill
+    var label = fmtNum(d.dist) + ' وحدة';
+    ctx.font = 'bold ' + Math.round(12 * dpr) + 'px sans-serif';
+    var tw = ctx.measureText(label).width;
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    ctx.fillStyle = 'rgba(15, 23, 42, .88)';
+    ctx.fillRect(mx - tw / 2 - 6 * dpr, my - 10 * dpr, tw + 12 * dpr, 20 * dpr);
+    ctx.fillStyle = '#38BDF8';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, mx, my + 4 * dpr);
+    ctx.textAlign = 'left';
+  }
+
+  function drawOverlays() {
+    var k;
+    // dimensions
+    for (k = 0; k < state.dimensions.length; k++) drawDimension(state.dimensions[k]);
+    // freehand strokes (plus the one being drawn right now)
+    function strokePath(s) {
+      if (!s.pts || s.pts.length < 2) return;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 3 * dpr;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      s.pts.forEach(function (p, i) {
+        if (i === 0) ctx.moveTo(w2sx(p[0]), w2sy(p[1]));
+        else ctx.lineTo(w2sx(p[0]), w2sy(p[1]));
+      });
+      ctx.stroke();
+    }
+    for (k = 0; k < state.strokes.length; k++) strokePath(state.strokes[k]);
+    if (state.currentStroke) strokePath(state.currentStroke);
+    // note pins (numbered) + their text in a dark pill
+    for (k = 0; k < state.annotations.length; k++) {
+      var a = state.annotations[k];
+      var x = w2sx(a.x), y = w2sy(a.y);
+      ctx.fillStyle = '#FBBF24';
+      ctx.beginPath(); ctx.arc(x, y, 11 * dpr, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.font = 'bold ' + Math.round(12 * dpr) + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(k + 1), x, y + 4 * dpr);
+      ctx.textAlign = 'left';
+      ctx.font = Math.round(12 * dpr) + 'px sans-serif';
+      var tw = ctx.measureText(a.text).width;
+      ctx.fillStyle = 'rgba(15, 23, 42, .88)';
+      ctx.fillRect(x + 14 * dpr, y - 10 * dpr, tw + 12 * dpr, 20 * dpr);
+      ctx.fillStyle = '#FBBF24';
+      ctx.fillText(a.text, x + 20 * dpr, y + 4 * dpr);
+    }
+    // selected entity highlight (edit mode): dashed bounding box
+    if (state.tool === 'edit' && state.selected) {
+      var b = entityBounds(state.selected);
+      if (b) {
+        ctx.strokeStyle = '#4F46E5';
+        ctx.lineWidth = 2 * dpr;
+        ctx.setLineDash([6 * dpr, 5 * dpr]);
+        ctx.strokeRect(w2sx(b.minX), w2sy(b.maxY), (b.maxX - b.minX) * state.scale * dpr, (b.maxY - b.minY) * state.scale * dpr);
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
@@ -421,6 +536,7 @@
     }
     drawMeasure();
     drawSearchHighlight();
+    drawOverlays();
   }
 
   function fmtNum(n) {
@@ -448,11 +564,28 @@
     state.measurePts = [];
     state.measureTotal = 0;
     state.selected = null;
+    // fresh markup state for the new file (saved markups load below)
+    state.tool = null;
+    state.annotations = [];
+    state.strokes = [];
+    state.dimensions = [];
+    state.dimPending = null;
+    state.currentStroke = null;
+    state.editMoveArmed = false;
+    state.editDrag = null;
+    state.pendingNote = null;
+    state.undoStack = [];
+    state.redoStack = [];
+    updateUndoButtons();
+    hideEditBar();
+    closeNoteSheet();
+    document.getElementById('drawPalette').classList.add('hidden');
     fileNameEl.textContent = state.fileName + ' — ' + doc.entities.length + ' عنصر';
     buildLayersPanel();
     buildSearchIndex();
     closeSearchSheet();
     showScreen('viewer');
+    loadMarkups(name);
     requestAnimationFrame(function () {
       resize();
       fitView();
@@ -534,17 +667,50 @@
   var idb = null;
   function openDB() {
     return new Promise(function (resolve) {
-      var req = indexedDB.open('scfastview', 2);
+      var req = indexedDB.open('scfastview', 3);
       req.onupgradeneeded = function () {
         var db = req.result;
         if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'name' });
         // 'wasm' holds the DWG engine (libredwg-web.wasm) once, so a future
         // small APK can load it from here instead of bundling it again.
         if (!db.objectStoreNames.contains('wasm')) db.createObjectStore('wasm', { keyPath: 'name' });
+        // 'markups' holds the user's notes, freehand and dimensions per file.
+        if (!db.objectStoreNames.contains('markups')) db.createObjectStore('markups', { keyPath: 'name' });
       };
       req.onsuccess = function () { idb = req.result; resolve(true); };
       req.onerror = function () { resolve(false); };
     });
+  }
+  // Save the current file's markups (notes, strokes, dimensions) so they
+  // are still there when the file is opened again. Move/delete edits are
+  // session-only: they live on the parsed entities, which are rebuilt on load.
+  function saveMarkups() {
+    if (!idb || !state.fileName || !state.doc) return;
+    try {
+      var tx = idb.transaction('markups', 'readwrite');
+      tx.objectStore('markups').put({
+        name: state.fileName,
+        annotations: state.annotations,
+        strokes: state.strokes,
+        dimensions: state.dimensions
+      });
+    } catch (e) { /* ignore */ }
+  }
+  function loadMarkups(name) {
+    if (!idb || !name) return;
+    try {
+      var tx = idb.transaction('markups', 'readonly');
+      var req = tx.objectStore('markups').get(name);
+      req.onsuccess = function () {
+        var rec = req.result;
+        if (rec) {
+          state.annotations = rec.annotations || [];
+          state.strokes = rec.strokes || [];
+          state.dimensions = rec.dimensions || [];
+          render();
+        }
+      };
+    } catch (e) { /* ignore */ }
   }
   // data: DXF text (string) or DWG raw bytes (ArrayBuffer). isDwg flags which.
   function saveToLibrary(name, data, size, isDwg) {
@@ -916,6 +1082,7 @@
   }
 
   function distToEntity(g, wx, wy) {
+    if (!g || g._deleted) return Infinity;
     function seg(px, py, x1, y1, x2, y2) {
       var dx = x2 - x1, dy = y2 - y1;
       var len2 = dx * dx + dy * dy;
@@ -952,7 +1119,9 @@
   }
 
   function handleTap(wx, wy) {
-    if (state.measureMode) {
+    if (!state.doc) return;
+    // --- measure: tap points, chain the total distance ---
+    if (state.tool === 'measure') {
       state.measurePts.push([wx, wy]);
       if (state.measurePts.length >= 2) {
         var a = state.measurePts[state.measurePts.length - 2];
@@ -965,21 +1134,84 @@
       render();
       return;
     }
-    if (!state.doc) return;
-    var tol = 12 / state.scale;
-    var best = null, bestD = Infinity;
-    state.doc.entities.forEach(function (g) {
-      if (state.hiddenLayers[g.layer]) return;
-      var d = distToEntity(g, wx, wy);
-      if (d < bestD) { bestD = d; best = g; }
-    });
-    if (best && bestD <= tol) {
+    // --- dimension: two taps = one persistent dimension line ---
+    if (state.tool === 'dimension') {
+      if (!state.dimPending) {
+        state.dimPending = [wx, wy];
+        measureLabel.textContent = 'دوس على النقطة التانية للبُعد';
+      } else {
+        var p1 = state.dimPending, p2 = [wx, wy];
+        var dim = { a: p1, b: p2, dist: Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) };
+        state.dimensions.push(dim);
+        pushUndo({ type: 'add-dimension', item: dim });
+        state.dimPending = null;
+        measureLabel.textContent = 'البُعد: ' + fmtNum(dim.dist) + ' وحدة';
+        saveMarkups();
+      }
+      render();
+      return;
+    }
+    // --- annotate: tap a pin to delete it, tap empty space to add a note ---
+    if (state.tool === 'annotate') {
+      var tapSx = wx * state.scale + state.ox;
+      var tapSy = -wy * state.scale + state.oy;
+      for (var i = 0; i < state.annotations.length; i++) {
+        var an = state.annotations[i];
+        var pinSx = an.x * state.scale + state.ox;
+        var pinSy = -an.y * state.scale + state.oy;
+        if (Math.hypot(pinSx - tapSx, pinSy - tapSy) <= 26) {
+          state.annotations.splice(i, 1);
+          pushUndo({ type: 'delete-annotation', item: an, index: i });
+          showHomeToast('تم حذف الملاحظة: ' + an.text);
+          saveMarkups();
+          render();
+          return;
+        }
+      }
+      state.pendingNote = { x: wx, y: wy };
+      document.getElementById('noteInput').value = '';
+      noteSheetEl.classList.add('open');
+      setTimeout(function () { document.getElementById('noteInput').focus(); }, 250);
+      return;
+    }
+    // --- edit: tap an entity to select it ---
+    if (state.tool === 'edit') {
+      var bestE = nearestEntity(wx, wy);
+      if (bestE) {
+        state.selected = bestE;
+        showEditBar();
+        showInfo(describeEntity(bestE));
+      } else {
+        state.selected = null;
+        hideEditBar();
+        infoBar.classList.add('hidden');
+      }
+      render();
+      return;
+    }
+    // --- draw: taps do nothing (drawing is by dragging) ---
+    if (state.tool === 'draw') return;
+    // --- view mode: tap an entity to see its info ---
+    var best = nearestEntity(wx, wy);
+    if (best) {
       state.selected = best;
       showInfo(describeEntity(best));
     } else {
       state.selected = null;
       infoBar.classList.add('hidden');
     }
+  }
+
+  function nearestEntity(wx, wy) {
+    if (!state.doc) return null;
+    var tol = 12 / state.scale;
+    var best = null, bestD = Infinity;
+    state.doc.entities.forEach(function (g) {
+      if (state.hiddenLayers[g.layer] || g._deleted) return;
+      var d = distToEntity(g, wx, wy);
+      if (d < bestD) { bestD = d; best = g; }
+    });
+    return (best && bestD <= tol) ? best : null;
   }
 
   // ---------- pointer: pan / pinch / tap ----------
@@ -994,7 +1226,18 @@
       downPos = { x: e.clientX, y: e.clientY };
       downTime = Date.now();
       moved = 0;
+      var r = canvas.getBoundingClientRect();
+      var wx = s2wx(e.clientX - r.left), wy = s2wy(e.clientY - r.top);
+      if (state.tool === 'draw') {
+        // freehand: a drag draws, panning is off in this mode
+        state.currentStroke = { color: state.drawColor, pts: [[wx, wy]] };
+      } else if (state.tool === 'edit' && state.editMoveArmed && state.selected) {
+        state.editDrag = { g: state.selected, lastX: wx, lastY: wy, dx: 0, dy: 0 };
+      }
     } else if (pointers.size === 2) {
+      // pinch zoom cancels any in-progress stroke or move
+      state.currentStroke = null;
+      state.editDrag = null;
       var pts = Array.from(pointers.values());
       pinchStart = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       pinchScale = state.scale;
@@ -1008,21 +1251,40 @@
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 1) {
       moved += Math.abs(dx) + Math.abs(dy);
-      state.ox += dx;
-      state.oy += dy;
-      render();
-    } else if (pointers.size === 2) {
-      var pts = Array.from(pointers.values());
-      var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      if (pinchStart > 0) {
+      if (state.currentStroke) {
         var r = canvas.getBoundingClientRect();
-        var cx = (pts[0].x + pts[1].x) / 2 - r.left;
-        var cy = (pts[0].y + pts[1].y) / 2 - r.top;
+        var wx = s2wx(e.clientX - r.left), wy = s2wy(e.clientY - r.top);
+        var pts = state.currentStroke.pts;
+        var last = pts[pts.length - 1];
+        if (Math.hypot(wx - last[0], wy - last[1]) > 0.5 / state.scale) pts.push([wx, wy]);
+        render();
+      } else if (state.editDrag) {
+        var r2 = canvas.getBoundingClientRect();
+        var wx2 = s2wx(e.clientX - r2.left), wy2 = s2wy(e.clientY - r2.top);
+        var ddx = wx2 - state.editDrag.lastX, ddy = wy2 - state.editDrag.lastY;
+        translateEntity(state.editDrag.g, ddx, ddy);
+        state.editDrag.dx += ddx;
+        state.editDrag.dy += ddy;
+        state.editDrag.lastX = wx2;
+        state.editDrag.lastY = wy2;
+        render();
+      } else {
+        state.ox += dx;
+        state.oy += dy;
+        render();
+      }
+    } else if (pointers.size === 2) {
+      var pts2 = Array.from(pointers.values());
+      var dist = Math.hypot(pts2[0].x - pts2[1].x, pts2[0].y - pts2[1].y);
+      if (pinchStart > 0) {
+        var r3 = canvas.getBoundingClientRect();
+        var cx = (pts2[0].x + pts2[1].x) / 2 - r3.left;
+        var cy = (pts2[0].y + pts2[1].y) / 2 - r3.top;
         var ns = pinchScale * dist / pinchStart;
-        var wx = s2wx(cx), wy = s2wy(cy);
+        var wx3 = s2wx(cx), wy3 = s2wy(cy);
         state.scale = Math.max(0.001, ns);
-        state.ox = cx - wx * state.scale;
-        state.oy = cy + wy * state.scale;
+        state.ox = cx - wx3 * state.scale;
+        state.oy = cy + wy3 * state.scale;
         render();
       }
     }
@@ -1030,9 +1292,29 @@
 
   function endPointer(e) {
     if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
-    if (pointers.size === 0 && downPos && Date.now() - downTime < 400 && moved < 12) {
-      var r = canvas.getBoundingClientRect();
-      handleTap(s2wx(e.clientX - r.left), s2wy(e.clientY - r.top));
+    if (pointers.size === 0) {
+      if (state.currentStroke) {
+        var s = state.currentStroke;
+        state.currentStroke = null;
+        if (s.pts.length >= 2) {
+          state.strokes.push(s);
+          pushUndo({ type: 'add-stroke', item: s });
+          saveMarkups();
+        }
+        render();
+      } else if (state.editDrag) {
+        var d = state.editDrag;
+        state.editDrag = null;
+        if (Math.abs(d.dx) > 1e-9 || Math.abs(d.dy) > 1e-9) {
+          pushUndo({ type: 'move-entity', g: d.g, dx: d.dx, dy: d.dy });
+        }
+        state.editMoveArmed = false;
+        updateEditBar();
+        render();
+      } else if (downPos && Date.now() - downTime < 400 && moved < 12) {
+        var r = canvas.getBoundingClientRect();
+        handleTap(s2wx(e.clientX - r.left), s2wy(e.clientY - r.top));
+      }
     }
     if (pointers.size < 2) pinchStart = 0;
     downPos = null;
@@ -1102,19 +1384,191 @@
   });
   document.getElementById('btnMeasure').addEventListener('click', function () {
     if (!state.doc) { showInfo('افتح ملف الأول عشان تقيس'); return; }
-    state.measureMode = !state.measureMode;
-    state.measurePts = [];
-    state.measureTotal = 0;
-    document.getElementById('btnMeasure').classList.toggle('active', state.measureMode);
-    measureLabel.textContent = state.measureMode ? 'دوس على أول نقطة' : '';
-    document.getElementById('btnClearMeasure').classList.toggle('hidden', !state.measureMode);
-    render();
+    setTool('measure');
   });
   document.getElementById('btnClearMeasure').addEventListener('click', function () {
     state.measurePts = [];
     state.measureTotal = 0;
     measureLabel.textContent = 'دوس على أول نقطة';
     render();
+  });
+
+  // ---------- professional toolbar: tools, undo/redo, edit, notes, draw ----------
+  var noteSheetEl = document.getElementById('noteSheet');
+  var editBarEl = document.getElementById('editBar');
+
+  function translateEntity(g, dx, dy) {
+    if (!g) return;
+    if (g.type === 'line') { g.x1 += dx; g.y1 += dy; g.x2 += dx; g.y2 += dy; }
+    else if (g.type === 'polyline') { (g.points || []).forEach(function (p) { p[0] += dx; p[1] += dy; }); }
+    else if (g.type === 'circle') { g.cx += dx; g.cy += dy; }
+    else if (g.type === 'text' || g.type === 'point') { g.x += dx; g.y += dy; }
+    else if (g.type === 'group') { (g.items || []).forEach(function (it) { translateEntity(it, dx, dy); }); }
+  }
+
+  function removeFrom(arr, item) {
+    var i = arr.indexOf(item);
+    if (i !== -1) arr.splice(i, 1);
+  }
+
+  function updateUndoButtons() {
+    document.getElementById('btnUndo').disabled = !state.undoStack.length;
+    document.getElementById('btnRedo').disabled = !state.redoStack.length;
+  }
+  function pushUndo(action) {
+    state.undoStack.push(action);
+    state.redoStack = [];
+    updateUndoButtons();
+  }
+  function applyAction(a, isUndo) {
+    if (a.type === 'add-annotation') {
+      if (isUndo) removeFrom(state.annotations, a.item); else state.annotations.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'delete-annotation') {
+      if (isUndo) state.annotations.splice(a.index, 0, a.item); else removeFrom(state.annotations, a.item);
+      saveMarkups();
+    } else if (a.type === 'add-stroke') {
+      if (isUndo) removeFrom(state.strokes, a.item); else state.strokes.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'clear-strokes') {
+      if (isUndo) state.strokes = a.items.slice(); else state.strokes = [];
+      saveMarkups();
+    } else if (a.type === 'add-dimension') {
+      if (isUndo) removeFrom(state.dimensions, a.item); else state.dimensions.push(a.item);
+      saveMarkups();
+    } else if (a.type === 'delete-entity') {
+      a.g._deleted = !isUndo;
+    } else if (a.type === 'move-entity') {
+      translateEntity(a.g, isUndo ? -a.dx : a.dx, isUndo ? -a.dy : a.dy);
+    }
+  }
+  function doUndo() {
+    var a = state.undoStack.pop();
+    if (!a) return;
+    applyAction(a, true);
+    state.redoStack.push(a);
+    updateUndoButtons();
+    render();
+  }
+  function doRedo() {
+    var a = state.redoStack.pop();
+    if (!a) return;
+    applyAction(a, false);
+    state.undoStack.push(a);
+    updateUndoButtons();
+    render();
+  }
+  document.getElementById('btnUndo').addEventListener('click', doUndo);
+  document.getElementById('btnRedo').addEventListener('click', doRedo);
+
+  function showEditBar() {
+    editBarEl.classList.remove('hidden');
+    updateEditBar();
+  }
+  function hideEditBar() {
+    editBarEl.classList.add('hidden');
+    state.editMoveArmed = false;
+  }
+  function updateEditBar() {
+    document.getElementById('btnEditMove').classList.toggle('active', state.editMoveArmed);
+  }
+  document.getElementById('btnEditMove').addEventListener('click', function () {
+    state.editMoveArmed = !state.editMoveArmed;
+    updateEditBar();
+    showHomeToast(state.editMoveArmed ? 'اسحب العنصر لنقله' : 'تم إلغاء النقل');
+  });
+  document.getElementById('btnEditDelete').addEventListener('click', function () {
+    if (!state.selected) return;
+    var g = state.selected;
+    g._deleted = true;
+    pushUndo({ type: 'delete-entity', g: g });
+    state.selected = null;
+    hideEditBar();
+    showHomeToast('تم حذف العنصر');
+    render();
+  });
+  document.getElementById('btnEditCancel').addEventListener('click', function () {
+    state.selected = null;
+    hideEditBar();
+    render();
+  });
+
+  function closeNoteSheet() {
+    noteSheetEl.classList.remove('open');
+    state.pendingNote = null;
+  }
+  document.getElementById('btnCloseNote').addEventListener('click', closeNoteSheet);
+  document.getElementById('btnSaveNote').addEventListener('click', function () {
+    var text = document.getElementById('noteInput').value.trim();
+    if (!text) { showHomeToast('اكتب الملاحظة الأول'); return; }
+    if (!state.pendingNote) { closeNoteSheet(); return; }
+    var ann = { x: state.pendingNote.x, y: state.pendingNote.y, text: text };
+    state.annotations.push(ann);
+    pushUndo({ type: 'add-annotation', item: ann });
+    saveMarkups();
+    closeNoteSheet();
+    render();
+  });
+
+  document.querySelectorAll('#drawPalette .color-dot').forEach(function (b) {
+    b.addEventListener('click', function () {
+      state.drawColor = b.getAttribute('data-color');
+      document.querySelectorAll('#drawPalette .color-dot').forEach(function (x) {
+        x.classList.toggle('selected', x === b);
+      });
+    });
+  });
+  document.getElementById('btnClearStrokes').addEventListener('click', function () {
+    if (!state.strokes.length) return;
+    var old = state.strokes.slice();
+    state.strokes = [];
+    pushUndo({ type: 'clear-strokes', items: old });
+    saveMarkups();
+    render();
+  });
+
+  function setTool(t) {
+    if (t === state.tool) t = null;
+    // clear the previous tool's transient state
+    state.measureMode = false;
+    state.measurePts = [];
+    state.measureTotal = 0;
+    measureLabel.textContent = '';
+    state.dimPending = null;
+    state.currentStroke = null;
+    state.editMoveArmed = false;
+    state.editDrag = null;
+    if (state.tool === 'edit') { state.selected = null; hideEditBar(); }
+    closeNoteSheet();
+    state.tool = t;
+    if (t === 'measure') {
+      state.measureMode = true;
+      measureLabel.textContent = 'دوس على أول نقطة';
+    }
+    document.getElementById('btnAnnotate').classList.toggle('active', t === 'annotate');
+    document.getElementById('btnDraw').classList.toggle('active', t === 'draw');
+    document.getElementById('btnEdit').classList.toggle('active', t === 'edit');
+    document.getElementById('btnMeasure').classList.toggle('active', t === 'measure');
+    document.getElementById('btnDimension').classList.toggle('active', t === 'dimension');
+    document.getElementById('drawPalette').classList.toggle('hidden', t !== 'draw');
+    document.getElementById('btnClearMeasure').classList.toggle('hidden', t !== 'measure');
+    render();
+  }
+  document.getElementById('btnAnnotate').addEventListener('click', function () {
+    if (!state.doc) { showInfo('افتح ملف الأول عشان تضيف ملاحظة'); return; }
+    setTool('annotate');
+  });
+  document.getElementById('btnDraw').addEventListener('click', function () {
+    if (!state.doc) { showInfo('افتح ملف الأول عشان ترسم'); return; }
+    setTool('draw');
+  });
+  document.getElementById('btnEdit').addEventListener('click', function () {
+    if (!state.doc) { showInfo('افتح ملف الأول عشان تعدّل'); return; }
+    setTool('edit');
+  });
+  document.getElementById('btnDimension').addEventListener('click', function () {
+    if (!state.doc) { showInfo('افتح ملف الأول عشان تقيس بُعد'); return; }
+    setTool('dimension');
   });
 
   // ---------- settings UI ----------
@@ -1163,7 +1617,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.5.3', code: 15 };
+  var APP_VERSION = { version: '1.6.0', code: 16 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -1213,7 +1667,15 @@
 
   // ---------- init ----------
   applySettingsUI();
+  updateUndoButtons();
   openDB().then(function () { loadLibrary(); cacheWasmEngine(); });
   showScreen('home');
   checkForUpdates(false);
+
+  // Debug handle for automated checks (harmless in production).
+  window.__scfv = {
+    state: state, setTool: setTool, handleTap: handleTap,
+    translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo,
+    loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups
+  };
 })();

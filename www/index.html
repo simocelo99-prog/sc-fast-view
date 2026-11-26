@@ -68,6 +68,10 @@
   <header class="topbar">
     <button class="icon-btn" id="btnBack" title="رجوع">→</button>
     <div class="filename" id="fileName">مفيش ملف مفتوح</div>
+    <button class="icon-btn" id="btnUndo" title="تراجع">↩️</button>
+    <button class="icon-btn" id="btnRedo" title="إعادة">↪️</button>
+    <button class="icon-btn" id="btnSearch" title="بحث في الرسمة">🔍</button>
+    <button class="icon-btn" id="btnFit" title="ملاءمة">⛶</button>
     <button class="icon-btn" id="btnTheme" title="فاتح / غامق">🌙</button>
   </header>
 
@@ -75,6 +79,24 @@
     <canvas id="canvas"></canvas>
     <div class="info-bar hidden" id="infoBar"></div>
     <div class="measure-label" id="measureLabel"></div>
+    <div class="zoom-fab">
+      <button id="btnZoomIn" title="تكبير">+</button>
+      <button id="btnZoomOut" title="تصغير">−</button>
+    </div>
+    <div class="edit-bar hidden" id="editBar">
+      <button id="btnEditMove">↔️ نقل</button>
+      <button id="btnEditDelete">🗑️ حذف</button>
+      <button id="btnEditCancel">✕ إلغاء</button>
+    </div>
+    <div class="draw-palette hidden" id="drawPalette">
+      <button class="color-dot selected" data-color="#EF4444" style="background:#EF4444" title="أحمر"></button>
+      <button class="color-dot" data-color="#F59E0B" style="background:#F59E0B" title="أصفر"></button>
+      <button class="color-dot" data-color="#22C55E" style="background:#22C55E" title="أخضر"></button>
+      <button class="color-dot" data-color="#3B82F6" style="background:#3B82F6" title="أزرق"></button>
+      <button class="color-dot" data-color="#FFFFFF" style="background:#FFFFFF" title="أبيض"></button>
+      <span class="palette-sep"></span>
+      <button id="btnClearStrokes" title="مسح كل الرسم">🗑️</button>
+    </div>
   </main>
 
   <div class="layers-sheet" id="layersSheet">
@@ -101,15 +123,26 @@
     <div class="search-results" id="searchResults"></div>
   </div>
 
+  <div class="note-sheet" id="noteSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <span>💬 ملاحظة جديدة</span>
+      <button class="icon-btn" id="btnCloseNote">✕</button>
+    </div>
+    <div class="note-input-row">
+      <input id="noteInput" type="text" placeholder="اكتب الملاحظة… مثال: راجع الكابل هنا" autocomplete="off">
+    </div>
+    <button class="big-btn" id="btnSaveNote">💾 حفظ الملاحظة</button>
+  </div>
+
   <footer class="toolbar">
-    <button class="tool-btn" id="btnSearch"><span class="tool-ico">🔍</span><span class="tool-label">بحث</span></button>
+    <button class="tool-btn" id="btnAnnotate"><span class="tool-ico">💬</span><span class="tool-label">ملاحظة</span></button>
+    <button class="tool-btn" id="btnDraw"><span class="tool-ico">✏️</span><span class="tool-label">رسم</span></button>
+    <button class="tool-btn" id="btnEdit"><span class="tool-ico">🔧</span><span class="tool-label">تعديل</span></button>
     <button class="tool-btn" id="btnLayers"><span class="tool-ico">🧱</span><span class="tool-label">الطبقات</span></button>
     <button class="tool-btn" id="btnMeasure"><span class="tool-ico">📏</span><span class="tool-label">قياس</span></button>
+    <button class="tool-btn" id="btnDimension"><span class="tool-ico">↔️</span><span class="tool-label">بُعد</span></button>
     <button class="tool-btn hidden" id="btnClearMeasure"><span class="tool-ico">🗑️</span><span class="tool-label">مسح القياس</span></button>
-    <button class="tool-btn" id="btnFit"><span class="tool-ico">⛶</span><span class="tool-label">ملاءمة</span></button>
-    <span class="tool-sep"></span>
-    <button class="tool-btn zoom" id="btnZoomOut"><span class="tool-ico">−</span></button>
-    <button class="tool-btn zoom" id="btnZoomIn"><span class="tool-ico">+</span></button>
   </footer>
 </section>
 
