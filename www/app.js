@@ -63,6 +63,7 @@
     pendingArrow: null,
     pendingBox: null,
     pendingImagePoint: null,
+    pendingAudioPoint: null,
     recording: null,        // {recorder, startTime, secs, timer}
     playingRecording: null, // {item, audio}
     currentImage: null,
@@ -698,6 +699,7 @@
     state.pendingArrow = null;
     state.pendingBox = null;
     state.pendingImagePoint = null;
+    state.pendingAudioPoint = null;
     state.imageCache = {};
     stopPlayback();
     if (state.recording) stopRecording();
@@ -1796,10 +1798,44 @@
           Math.floor(rec.secs / 60) + ':' + ('0' + (rec.secs % 60)).slice(-2);
         if (rec.secs >= 60) stopRecording(); // cap: 60 seconds per note
       }, 500);
-    }).catch(function () {
-      showHomeToast('مش قادر أشغّل الميكروفون — اتأكد من الإذن في إعدادات التطبيق');
+    }).catch(function (err) {
+      // Show the real error so the next report names it, then fall back to
+      // attaching an existing recording (e.g. from the phone's voice
+      // recorder) at the same point.
+      var name = (err && err.name) ? err.name : 'خطأ';
+      showHomeToast('الميكروفون مش شغال (' + name + ') — اختار تسجيل جاهز من موبايلك');
+      state.pendingAudioPoint = { x: wx, y: wy };
+      document.getElementById('audioInput').click();
     });
   }
+  // Attach an existing audio file (fallback when the mic path fails, or
+  // when the user recorded the note in the phone's voice recorder app).
+  document.getElementById('audioInput').addEventListener('change', function (ev) {
+    var f = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!f || !state.pendingAudioPoint) return;
+    var point = state.pendingAudioPoint;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var item = { x: point.x, y: point.y, audio: reader.result, dur: 0 };
+      // best effort: read the clip length for the pin label
+      try {
+        var probe = new Audio(reader.result);
+        probe.addEventListener('loadedmetadata', function () {
+          item.dur = Math.round(probe.duration || 0);
+          render();
+        });
+      } catch (e) { /* ignore */ }
+      state.recordings.push(item);
+      pushUndo({ type: 'add-recording', item: item });
+      saveMarkups();
+      state.pendingAudioPoint = null;
+      showHomeToast('تم إرفاق التسجيل الصوتي');
+      render();
+    };
+    reader.readAsDataURL(f);
+  });
+
   function stopRecording() {
     if (!state.recording) return;
     var rec = state.recording;
@@ -2029,7 +2065,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.1', code: 17 };
+  var APP_VERSION = { version: '1.6.2', code: 18 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2089,6 +2125,7 @@
     state: state, setTool: setTool, setAnnotateSub: setAnnotateSub, handleTap: handleTap,
     translateEntity: translateEntity, doUndo: doUndo, doRedo: doRedo, pushUndo: pushUndo,
     loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
-    togglePlayback: togglePlayback, openImageViewer: openImageViewer
+    togglePlayback: togglePlayback, openImageViewer: openImageViewer,
+    startRecordingAt: startRecordingAt
   };
 })();
