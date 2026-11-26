@@ -718,6 +718,26 @@
   });
 
   // ---------- layers panel ----------
+  // Layer names from PDF-converted files are Chinese (the converter names
+  // them PDF_文字 / PDF_几何图形 / PDF_实体填充). Show them in Arabic
+  // instead — the internal name stays untouched, so toggling and search
+  // keep working exactly as before.
+  var LAYER_CN_WORDS = [
+    ['PDF_几何图形', 'رسوم PDF'],
+    ['PDF_文字', 'نصوص PDF'],
+    ['PDF_实体填充', 'تعبئة PDF'],
+    ['几何图形', 'رسوم'],
+    ['文字', 'نصوص'],
+    ['实体填充', 'تعبئة']
+  ];
+  function displayLayerName(name) {
+    var out = String(name || '');
+    LAYER_CN_WORDS.forEach(function (pair) {
+      out = out.split(pair[0]).join(pair[1]);
+    });
+    return out;
+  }
+
   function buildLayersPanel() {
     layersList.innerHTML = '';
     if (!state.doc) return;
@@ -727,7 +747,7 @@
       var dot = DXF.aciColor(layer.color, isDarkBg()) || fgColor();
       row.innerHTML =
         '<span class="layer-dot" style="background:' + dot + '"></span>' +
-        '<span class="layer-name">' + escapeHtml(layer.name) + '</span>' +
+        '<span class="layer-name">' + escapeHtml(displayLayerName(layer.name)) + '</span>' +
         '<input type="checkbox" ' + (state.hiddenLayers[layer.name] ? '' : 'checked') + '>';
       row.querySelector('input').addEventListener('change', function (ev) {
         state.hiddenLayers[layer.name] = !ev.target.checked;
@@ -821,7 +841,9 @@
     var layerHits = [];
     for (var j = 0; j < searchIndex.layers.length && layerHits.length < 10; j++) {
       var L = searchIndex.layers[j];
-      if (L.box && L.name.toLowerCase().indexOf(q) !== -1) layerHits.push(L);
+      // match the original name AND the Arabic display name
+      if (L.box && (L.name.toLowerCase().indexOf(q) !== -1 ||
+          displayLayerName(L.name).toLowerCase().indexOf(q) !== -1)) layerHits.push(L);
     }
     var total = textHits.length + layerHits.length;
     searchCountEl.textContent = total ? ('لقيت ' + total + ' نتيجة') : 'مفيش نتائج مطابقة';
@@ -835,14 +857,14 @@
     textHits.forEach(function (t) {
       var row = document.createElement('button');
       row.className = 'search-result';
-      row.innerHTML = '<span class="res-ico">🔤</span><span class="res-text">' + escapeHtml(t.str) + '</span><span class="res-sub">' + escapeHtml(t.layer) + '</span>';
+      row.innerHTML = '<span class="res-ico">🔤</span><span class="res-text">' + escapeHtml(t.str) + '</span><span class="res-sub">' + escapeHtml(displayLayerName(t.layer)) + '</span>';
       row.addEventListener('click', function () { jumpToPoint(t.x, t.y, t.str); });
       searchResultsEl.appendChild(row);
     });
     layerHits.forEach(function (L) {
       var row = document.createElement('button');
       row.className = 'search-result';
-      row.innerHTML = '<span class="res-ico">🧱</span><span class="res-text">' + escapeHtml(L.name) + '</span><span class="res-sub">طبقة • ' + L.count + ' عنصر</span>';
+      row.innerHTML = '<span class="res-ico">🧱</span><span class="res-text">' + escapeHtml(displayLayerName(L.name)) + '</span><span class="res-sub">طبقة • ' + L.count + ' عنصر</span>';
       row.addEventListener('click', function () { fitToBox(L.box); });
       searchResultsEl.appendChild(row);
     });
@@ -1141,7 +1163,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.5.0', code: 12 };
+  var APP_VERSION = { version: '1.5.1', code: 13 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
