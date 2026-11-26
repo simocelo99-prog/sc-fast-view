@@ -267,6 +267,7 @@
     });
     return n;
   }
+  var fitViewRetries = 0;
   function fitView() {
     if (!state.doc) return;
     var b, kind;
@@ -327,7 +328,16 @@
     // an empty or bound-less file has nothing to fit — leave the view alone
     if (!b || !isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minY) || !isFinite(b.maxY)) return;
     var r = canvas.parentElement.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) return;
+    if (r.width < 2 || r.height < 2) {
+      // The viewer is not laid out yet (can happen when a file is opened
+      // right after the app starts or returns from background). Retry
+      // shortly instead of leaving the default view — the default
+      // (scale 1, origin 0,0) shows an empty region for files whose
+      // content is far from the origin, i.e. a blank screen.
+      if (fitViewRetries < 20) { fitViewRetries++; setTimeout(fitView, 100); }
+      return;
+    }
+    fitViewRetries = 0;
     var bw = Math.max(b.maxX - b.minX, 0.001);
     var bh = Math.max(b.maxY - b.minY, 0.001);
     state.scale = Math.min(r.width / bw, r.height / bh) * 0.92;
@@ -701,6 +711,18 @@
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
+    // Safety net: if a file is loaded but the view was never fitted
+    // (fitView bailed while the viewer was not laid out yet), the
+    // default view (scale 1, origin 0,0) shows an empty region for
+    // files whose content is far from the origin — a blank screen.
+    // Fit now; fitView renders, so return here. (A fit that already
+    // ran sets ox/oy/scale, so this only fires for a never-fitted view.)
+    var fb2 = state.doc && state.doc.bounds;
+    if (state.doc && fb2 && isFinite(fb2.minX) && isFinite(fb2.maxX) && isFinite(fb2.minY) && isFinite(fb2.maxY) &&
+        state.scale === 1 && state.ox === 0 && state.oy === 0) {
+      fitView();
+      if (state.scale !== 1 || state.ox !== 0 || state.oy !== 0) return;
+    }
     colorCache = {};
     ctx.fillStyle = bgColor();
     ctx.fillRect(0, 0, r.width * dpr, r.height * dpr);
@@ -2325,7 +2347,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.1', code: 27 };
+  var APP_VERSION = { version: '1.7.2', code: 28 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
