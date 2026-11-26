@@ -40,6 +40,8 @@
     selected: null,
     screen: 'home',
     tab: 'recent',
+    search: '',
+    typeFilter: 'all',
     library: []
   };
 
@@ -509,8 +511,14 @@
   var idb = null;
   function openDB() {
     return new Promise(function (resolve) {
-      var req = indexedDB.open('scfastview', 1);
-      req.onupgradeneeded = function () { req.result.createObjectStore('files', { keyPath: 'name' }); };
+      var req = indexedDB.open('scfastview', 2);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'name' });
+        // 'wasm' holds the DWG engine (libredwg-web.wasm) once, so a future
+        // small APK can load it from here instead of bundling it again.
+        if (!db.objectStoreNames.contains('wasm')) db.createObjectStore('wasm', { keyPath: 'name' });
+      };
       req.onsuccess = function () { idb = req.result; resolve(true); };
       req.onerror = function () { resolve(false); };
     });
@@ -547,6 +555,30 @@
       };
     } catch (e) { /* ignore */ }
   }
+  // Save the bundled DWG engine (libredwg-web.wasm, ~8 MB) into the app's
+  // storage once, in the background, from the local APK assets (no network).
+  // The next version's APK will not bundle the engine, so its update
+  // download becomes small (~1.5 MB) and the engine loads from here.
+  function cacheWasmEngine() {
+    if (!idb) return;
+    try {
+      var tx = idb.transaction('wasm', 'readonly');
+      var get = tx.objectStore('wasm').get('libredwg-web.wasm');
+      get.onsuccess = function () {
+        if (get.result) return; // already cached
+        fetch('libredwg/libredwg-web.wasm').then(function (res) {
+          if (!res.ok) return null;
+          return res.arrayBuffer();
+        }).then(function (buf) {
+          if (!buf) return;
+          try {
+            var tx2 = idb.transaction('wasm', 'readwrite');
+            tx2.objectStore('wasm').put({ name: 'libredwg-web.wasm', data: buf, size: buf.byteLength, savedAt: Date.now() });
+          } catch (e) { /* ignore */ }
+        }).catch(function () { /* ignore — DWG still opens from the bundled engine */ });
+      };
+    } catch (e) { /* ignore */ }
+  }
   function toggleFavorite(name) {
     if (!idb) return;
     try {
@@ -568,13 +600,28 @@
     if (state.tab === 'favorites') rows = rows.filter(function (r) { return r.favorite; });
     else if (state.tab === 'drawings') rows.sort(function (a, b) { return a.name.localeCompare(b.name); });
     else rows.sort(function (a, b) { return b.time - a.time; });
+    // بحث داخل التطبيق + فلتر نوع الملف
+    var hasFilter = state.search !== '' || state.typeFilter !== 'all';
+    if (state.typeFilter === 'dwg') rows = rows.filter(function (r) { return r.isDwg; });
+    else if (state.typeFilter === 'dxf') rows = rows.filter(function (r) { return !r.isDwg; });
+    if (state.search !== '') {
+      var q = state.search;
+      rows = rows.filter(function (r) { return String(r.name).toLowerCase().indexOf(q) !== -1; });
+    }
     fileListEl.innerHTML = '';
-    homeEmptyEl.classList.toggle('hidden', rows.length > 0 || state.tab === 'favorites');
+    homeEmptyEl.classList.toggle('hidden', rows.length > 0 || state.tab === 'favorites' || hasFilter);
     if (state.tab === 'favorites' && !rows.length) {
       var emptyFav = document.createElement('div');
       emptyFav.className = 'empty-card';
       emptyFav.innerHTML = '<p class="empty-sub">مفيش ملفات مفضلة لسه — دوس على النجمة ⭐ جنب أي ملف</p>';
       fileListEl.appendChild(emptyFav);
+      return;
+    }
+    if (!rows.length && hasFilter) {
+      var emptySearch = document.createElement('div');
+      emptySearch.className = 'search-empty';
+      emptySearch.innerHTML = 'مفيش نتائج مطابقة لـ <b>«' + escapeHtml(state.search || '') + '»</b><br>جرّب اسم تاني أو غيّر الفلتر';
+      fileListEl.appendChild(emptySearch);
       return;
     }
     rows.forEach(function (rec) {
@@ -583,9 +630,12 @@
       var thumb = rec.thumb
         ? '<img class="file-thumb" src="' + rec.thumb + '" alt="">'
         : '<span class="file-thumb-placeholder">📐</span>';
+      var typeBadge = rec.isDwg
+        ? '<span class="file-type dwg">DWG</span>'
+        : '<span class="file-type dxf">DXF</span>';
       card.innerHTML = thumb +
         '<span class="file-meta"><span class="file-name">' + escapeHtml(rec.name) + '</span>' +
-        '<span class="file-sub">' + fmtDate(rec.time) + ' &nbsp;' + fmtSize(rec.size) + '</span></span>' +
+        '<span class="file-sub">' + fmtDate(rec.time) + ' &nbsp;' + fmtSize(rec.size) + '</span>' + typeBadge + '</span>' +
         '<span class="file-star' + (rec.favorite ? ' on' : '') + '" data-star="1">' + (rec.favorite ? '★' : '☆') + '</span>';
       card.addEventListener('click', function (ev) {
         if (ev.target.getAttribute('data-star')) {
@@ -610,6 +660,35 @@
       state.tab = t.getAttribute('data-tab');
       document.querySelectorAll('.tab').forEach(function (x) {
         x.classList.toggle('active', x === t);
+      });
+      renderLibrary();
+    });
+  });
+
+  // ---------- بحث داخل التطبيق + فلتر النوع ----------
+  var searchInputEl = document.getElementById('searchInput');
+  var clearSearchEl = document.getElementById('btnClearSearch');
+  if (searchInputEl) {
+    searchInputEl.addEventListener('input', function () {
+      state.search = searchInputEl.value.trim().toLowerCase();
+      clearSearchEl.classList.toggle('hidden', !searchInputEl.value);
+      renderLibrary();
+    });
+  }
+  if (clearSearchEl) {
+    clearSearchEl.addEventListener('click', function () {
+      searchInputEl.value = '';
+      state.search = '';
+      clearSearchEl.classList.add('hidden');
+      renderLibrary();
+      searchInputEl.focus();
+    });
+  }
+  document.querySelectorAll('#typeChips .chip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      state.typeFilter = c.getAttribute('data-type');
+      document.querySelectorAll('#typeChips .chip').forEach(function (x) {
+        x.classList.toggle('active', x === c);
       });
       renderLibrary();
     });
@@ -893,7 +972,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.3.4', code: 8 };
+  var APP_VERSION = { version: '1.4.0', code: 9 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -919,12 +998,10 @@
             if (/\.apk$/i.test(a.name)) apk = a;
           });
           pendingUpdateUrl = apk ? apk.browser_download_url : rel.html_url;
+          // إشعار صغير فقط (سناكبار) — من غير بانر كبير ومن غير توست تاني
           document.getElementById('updateText').textContent =
-            'يوجد تحديث جديد ' + (rel.tag_name || '') + ' — حمّله وثبّته من هنا';
+            'تحديث جديد ' + (rel.tag_name || '') + ' متاح';
           document.getElementById('updateBanner').classList.remove('hidden');
-          // the banner lives on the home screen — also announce it with a
-          // toast so the user sees it even while in Settings or the viewer
-          showHomeToast('يوجد تحديث جديد ' + (rel.tag_name || '') + ' — ارجع للرئيسية وحمّله ⬇️');
         } else if (manual) {
           showHomeToast('إنت على أحدث إصدار ✓ (' + APP_VERSION.version + ')');
         }
@@ -936,13 +1013,16 @@
   document.getElementById('btnUpdate').addEventListener('click', function () {
     if (pendingUpdateUrl) window.open(pendingUpdateUrl, '_blank');
   });
+  document.getElementById('btnDismissUpdate').addEventListener('click', function () {
+    document.getElementById('updateBanner').classList.add('hidden');
+  });
   document.getElementById('btnCheckUpdate').addEventListener('click', function () {
     checkForUpdates(true);
   });
 
   // ---------- init ----------
   applySettingsUI();
-  openDB().then(function () { loadLibrary(); });
+  openDB().then(function () { loadLibrary(); cacheWasmEngine(); });
   showScreen('home');
   checkForUpdates(false);
 })();

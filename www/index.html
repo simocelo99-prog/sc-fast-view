@@ -3,43 +3,54 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#17a398">
+<meta name="theme-color" content="#4F46E5">
 <title>SC Fast View — عارض رسومات DWG و DXF</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<!-- ============ HOME SCREEN (like DWG FastView) ============ -->
+<!-- ============ HOME SCREEN ============ -->
 <section id="screenHome" class="screen">
   <header class="home-header">
     <div class="home-logo">SC</div>
-    <div class="home-title">SC Fast View</div>
+    <div class="home-head-text">
+      <div class="home-title">SC Fast View</div>
+      <div class="home-sub">عارض DWG و DXF — سريع ومن غير إعلانات</div>
+    </div>
   </header>
+
+  <!-- بحث داخل التطبيق -->
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input type="search" id="searchInput" placeholder="دوّر على ملف… اكتب اسم الرسمة" autocomplete="off">
+    <button class="search-clear hidden" id="btnClearSearch" title="مسح البحث">✕</button>
+  </div>
+
+  <div class="chips-row" id="typeChips">
+    <button class="chip active" data-type="all">الكل</button>
+    <button class="chip" data-type="dwg">DWG</button>
+    <button class="chip" data-type="dxf">DXF</button>
+  </div>
 
   <nav class="tabs">
     <button class="tab active" data-tab="recent">الأخيرة</button>
-    <button class="tab" data-tab="favorites">المفضلة</button>
+    <button class="tab" data-tab="favorites">المفضلة ⭐</button>
     <button class="tab" data-tab="drawings">الرسومات</button>
   </nav>
-
-  <div class="update-banner hidden" id="updateBanner">
-    <span id="updateText">يوجد تحديث جديد</span>
-    <button class="update-btn" id="btnUpdate">تحديث ⬇️</button>
-  </div>
 
   <main class="file-list" id="fileList"></main>
 
   <div class="home-empty" id="homeEmpty">
     <div class="empty-card">
-      <div class="empty-logo">SC Fast View</div>
-      <p class="empty-sub">عارض رسومات سريع — من غير إعلانات</p>
+      <div class="empty-art">📐</div>
+      <div class="empty-title">لسه مفيش رسومات هنا</div>
+      <p class="empty-sub">افتح أول ملف DWG أو DXF — هيتحفظ هنا وتقدر تدوّر عليه بعد كده بالاسم</p>
       <button class="big-btn" id="btnOpenHome">📂 افتح ملف DWG أو DXF</button>
       <button class="big-btn ghost" id="btnDemoHome">🏠 جرّب الرسمة التجريبية</button>
       <div class="dwg-note">
         <b>ملفات DWG؟</b>
         التطبيق بيفتح ملفات <b>DWG</b> و <b>DXF</b> مباشرة من غير تحويل ولا إنترنت — دوس على + واختار الملف.
       </div>
-      <p class="install-hint">💡 عشان يبقى زي التطبيق على موبايلك: من كروم ← القائمة ⋮ ← <b>إضافة إلى الشاشة الرئيسية</b></p>
     </div>
   </div>
 
@@ -67,6 +78,7 @@
   </main>
 
   <div class="layers-sheet" id="layersSheet">
+    <div class="sheet-handle"></div>
     <div class="sheet-head">
       <span>الطبقات</span>
       <button class="icon-btn" id="btnCloseLayers">✕</button>
@@ -93,6 +105,7 @@
   </header>
 
   <main class="settings-list">
+    <div class="settings-group">العرض</div>
     <div class="setting-row">
       <div class="setting-label">لون الخلفية</div>
       <div class="bg-choices" id="bgChoices">
@@ -135,9 +148,10 @@
       </label>
     </div>
 
+    <div class="settings-group">التطبيق</div>
     <div class="setting-row">
       <div class="setting-text">
-        <div class="setting-label" id="versionLabel">الإصدار الحالي: 1.3.0</div>
+        <div class="setting-label" id="versionLabel">الإصدار الحالي: 1.4.0</div>
         <div class="setting-sub">التطبيق بيتحقق من التحديثات لوحده، أو دوس هنا</div>
       </div>
       <button class="check-btn" id="btnCheckUpdate">تحقق 🔄</button>
@@ -157,6 +171,13 @@
     <button class="nav-btn active" data-nav="settings">⚙️<span>الإعدادات</span></button>
   </footer>
 </section>
+
+<!-- إشعار تحديث صغير (بدل البانر الكبير) -->
+<div class="update-snackbar hidden" id="updateBanner">
+  <span id="updateText">يوجد تحديث جديد</span>
+  <button class="update-btn" id="btnUpdate">تحديث ⬇️</button>
+  <button class="update-dismiss" id="btnDismissUpdate" title="إغلاق">✕</button>
+</div>
 
 <input type="file" id="fileInput" accept=".dxf,.dwg" hidden>
 <script src="dxf.js"></script>

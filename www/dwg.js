@@ -29,13 +29,43 @@
   var loadPromise = null;
   var FileTypeDWG = 0; // Dwg_File_Type.DWG
 
+  // Read the cached DWG engine (saved in the app's storage by an earlier
+  // version). Resolves null when there is no cache yet — never rejects.
+  function getCachedWasm() {
+    return new Promise(function (resolve) {
+      try {
+        var req = indexedDB.open('scfastview');
+        req.onsuccess = function () {
+          try {
+            var db = req.result;
+            if (!db.objectStoreNames.contains('wasm')) { resolve(null); return; }
+            var get = db.transaction('wasm', 'readonly').objectStore('wasm').get('libredwg-web.wasm');
+            get.onsuccess = function () {
+              resolve(get.result && get.result.data ? get.result.data : null);
+            };
+            get.onerror = function () { resolve(null); };
+          } catch (e) { resolve(null); }
+        };
+        req.onerror = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }
+
   function loadLib() {
     if (loadPromise) return loadPromise;
     loadPromise = import('./libredwg/libredwg-web.js').then(function (mod) {
       FileTypeDWG = mod.Dwg_File_Type.DWG;
-      // No filepath: the Emscripten glue locates libredwg-web.wasm next to
-      // libredwg-glue.js (same folder), which works from a Capacitor asset URL.
-      return mod.LibreDwg.create();
+      // Prefer the cached engine (wasmBinary) so a future APK can ship
+      // without the 8 MB file; fall back to the bundled file next to the
+      // glue, which works from a Capacitor asset URL.
+      return getCachedWasm().then(function (bytes) {
+        if (bytes) {
+          return mod.createModule({ wasmBinary: bytes }).then(function (inst) {
+            return mod.LibreDwg.createByWasmInstance(inst);
+          });
+        }
+        return mod.LibreDwg.create();
+      }).catch(function () { return mod.LibreDwg.create(); });
     });
     return loadPromise;
   }
