@@ -337,40 +337,37 @@
 
   // ---------- viewport culling (fast render for big files) ----------
   function entityVisible(g, x0, y0, x1, y1) {
-    if (g.type === 'line') {
-      return !(Math.max(g.x1, g.x2) < x0 || Math.min(g.x1, g.x2) > x1 ||
-               Math.max(g.y1, g.y2) < y0 || Math.min(g.y1, g.y2) > y1);
-    }
-    if (g.type === 'polyline') {
-      for (var k = 0; k < g.points.length; k++) {
-        if (g.points[k][0] >= x0 && g.points[k][0] <= x1 &&
-            g.points[k][1] >= y0 && g.points[k][1] <= y1) return true;
-      }
-      return false;
-    }
-    if (g.type === 'circle') {
-      return g.cx + g.r >= x0 && g.cx - g.r <= x1 && g.cy + g.r >= y0 && g.cy - g.r <= y1;
-    }
-    if (g.type === 'text' || g.type === 'point') {
-      return g.x >= x0 && g.x <= x1 && g.y >= y0 && g.y <= y1;
-    }
-    if (g.type === 'group') {
-      for (var i = 0; i < g.items.length; i++) {
-        if (entityVisible(g.items[i], x0, y0, x1, y1)) return true;
-      }
-      return false;
-    }
-    return true;
+    // Bounds-based culling (O(1) once the bounds are cached). The old
+    // polyline check scanned every point per frame, and it wrongly culled a
+    // long segment that crossed the view with no vertex inside it.
+    var b = entityBounds(g);
+    if (!b) return false;
+    return !(b.maxX < x0 || b.minX > x1 || b.maxY < y0 || b.minY > y1);
+  }
+
+  // True when the entity is smaller than ~1.5 device pixels on screen in
+  // both directions — invisible at the current zoom, so skip drawing it.
+  // Text is judged by its height (its bounds are a single point), and
+  // points are always drawn (fixed screen-size cross).
+  function isTooSmall(g) {
+    if (!g || g.type === 'point') return false;
+    if (g.type === 'text') return g.h < 1.5 / (state.scale * dpr);
+    var b = entityBounds(g);
+    if (!b) return false;
+    var t = 1.5 / (state.scale * dpr);
+    return (b.maxX - b.minX) < t && (b.maxY - b.minY) < t;
   }
 
   // ---------- drawing ----------
   function drawEntity(g) {
     if (!g || g._deleted) return;
     if (g.type === 'group') {
+      if (isTooSmall(g)) return;
       g.items.forEach(drawEntity);
       return;
     }
     if (state.hiddenLayers[g.layer]) return;
+    if (isTooSmall(g)) return;
     ctx.strokeStyle = resolveColor(g);
     ctx.fillStyle = resolveColor(g);
     ctx.lineWidth = lineWidth();
@@ -383,11 +380,27 @@
       ctx.stroke();
     } else if (g.type === 'polyline') {
       if (!g.points || g.points.length < 2) return;
+      var pts = g.points, n = pts.length;
+      // LOD: at low zoom, consecutive points are sub-pixel apart. Draw a
+      // subset — at most ~1 point per screen pixel along the polyline's
+      // extent — so a 100k-point polyline costs ~1k lineTo calls, not 100k.
+      // Zooming in raises the stride back to 1 (full detail).
+      var step = 1;
+      if (n > 100) {
+        var b = g._box || entityBounds(g);
+        if (b) {
+          var ext = Math.max(b.maxX - b.minX, b.maxY - b.minY);
+          var screenPx = ext * state.scale * dpr;
+          if (screenPx > 0) step = Math.max(1, Math.floor(n / Math.max(1, screenPx)));
+        }
+      }
       ctx.beginPath();
-      g.points.forEach(function (p, k) {
-        if (k === 0) ctx.moveTo(w2sx(p[0]), w2sy(p[1]));
-        else ctx.lineTo(w2sx(p[0]), w2sy(p[1]));
-      });
+      for (var k = 0; k < n; k += step) {
+        if (k === 0) ctx.moveTo(w2sx(pts[k][0]), w2sy(pts[k][1]));
+        else ctx.lineTo(w2sx(pts[k][0]), w2sy(pts[k][1]));
+      }
+      // always end at the last point so the line reaches its true end
+      if (step > 1 && (n - 1) % step !== 0) ctx.lineTo(w2sx(pts[n - 1][0]), w2sy(pts[n - 1][1]));
       if (g.closed) ctx.closePath();
       ctx.stroke();
     } else if (g.type === 'circle') {
@@ -668,6 +681,21 @@
     }
   }
 
+  // Coalesced render for continuous gestures (pan, pinch, wheel): a drag
+  // fires dozens of pointermove events, and a full vector render of a huge
+  // file takes real time — rendering synchronously on every move queued up
+  // seconds of work and the view felt frozen. Now at most one render runs
+  // per animation frame.
+  var renderQueued = false;
+  function requestRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(function () {
+      renderQueued = false;
+      render();
+    });
+  }
+
   function render() {
     var r = canvas.parentElement.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return;
@@ -713,6 +741,9 @@
     opts = opts || {};
     state.doc = doc;
     state.fileName = name || 'رسم بدون اسم';
+    // Cache every entity's bounds once (cheap math, one pass) so per-frame
+    // culling and the sub-pixel skip are O(1) instead of re-scanning points.
+    (doc.entities || []).forEach(function (g) { entityBounds(g); });
     state.hiddenLayers = {};
     state.measurePts = [];
     state.measureTotal = 0;
@@ -1148,29 +1179,32 @@
       }
     });
   }
+  // Entity bounds, cached on the entity (g._box). A polyline with thousands
+  // of points used to be re-scanned on EVERY frame (culling, search, fit),
+  // which is what froze the viewer on huge files. The cache is filled once
+  // at open time; moving an entity (edit) clears it.
   function entityBounds(g) {
     if (!g) return null;
-    if (g.type === 'line') return { minX: Math.min(g.x1, g.x2), maxX: Math.max(g.x1, g.x2), minY: Math.min(g.y1, g.y2), maxY: Math.max(g.y1, g.y2) };
-    if (g.type === 'polyline') {
-      var b = null;
+    if (g._box) return g._box;
+    var b = null;
+    if (g.type === 'line') b = { minX: Math.min(g.x1, g.x2), maxX: Math.max(g.x1, g.x2), minY: Math.min(g.y1, g.y2), maxY: Math.max(g.y1, g.y2) };
+    else if (g.type === 'polyline') {
       (g.points || []).forEach(function (p) {
         if (!b) b = { minX: p[0], maxX: p[0], minY: p[1], maxY: p[1] };
         b.minX = Math.min(b.minX, p[0]); b.maxX = Math.max(b.maxX, p[0]);
         b.minY = Math.min(b.minY, p[1]); b.maxY = Math.max(b.maxY, p[1]);
       });
-      return b;
     }
-    if (g.type === 'circle') return { minX: g.cx - g.r, maxX: g.cx + g.r, minY: g.cy - g.r, maxY: g.cy + g.r };
-    if (g.type === 'text' || g.type === 'point') return { minX: g.x, maxX: g.x, minY: g.y, maxY: g.y };
-    if (g.type === 'group') {
-      var u = null;
+    else if (g.type === 'circle') b = { minX: g.cx - g.r, maxX: g.cx + g.r, minY: g.cy - g.r, maxY: g.cy + g.r };
+    else if (g.type === 'text' || g.type === 'point') b = { minX: g.x, maxX: g.x, minY: g.y, maxY: g.y };
+    else if (g.type === 'group') {
       (g.items || []).forEach(function (it) {
         var ib = entityBounds(it);
-        if (ib) u = u ? unionBox(u, ib) : ib;
+        if (ib) b = b ? unionBox(b, ib) : ib;
       });
-      return u;
     }
-    return null;
+    if (b) g._box = b;
+    return b;
   }
   function unionBox(a, b) {
     return { minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX), minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY) };
@@ -1514,16 +1548,16 @@
         var pts = state.currentStroke.pts;
         var last = pts[pts.length - 1];
         if (Math.hypot(wx - last[0], wy - last[1]) > 0.5 / state.scale) pts.push([wx, wy]);
-        render();
+        requestRender();
       } else if (state.pendingArrow) {
         var ra = canvas.getBoundingClientRect();
         state.pendingArrow.b = [s2wx(e.clientX - ra.left), s2wy(e.clientY - ra.top)];
-        render();
+        requestRender();
       } else if (state.pendingBox) {
         var rb = canvas.getBoundingClientRect();
         state.pendingBox.x1 = s2wx(e.clientX - rb.left);
         state.pendingBox.y1 = s2wy(e.clientY - rb.top);
-        render();
+        requestRender();
       } else if (state.editDrag) {
         var r2 = canvas.getBoundingClientRect();
         var wx2 = s2wx(e.clientX - r2.left), wy2 = s2wy(e.clientY - r2.top);
@@ -1533,11 +1567,11 @@
         state.editDrag.dy += ddy;
         state.editDrag.lastX = wx2;
         state.editDrag.lastY = wy2;
-        render();
+        requestRender();
       } else {
         state.ox += dx;
         state.oy += dy;
-        render();
+        requestRender();
       }
     } else if (pointers.size === 2) {
       var pts2 = Array.from(pointers.values());
@@ -1551,7 +1585,7 @@
         state.scale = Math.max(0.001, ns);
         state.ox = cx - wx3 * state.scale;
         state.oy = cy + wy3 * state.scale;
-        render();
+        requestRender();
       }
     }
   });
@@ -1617,7 +1651,7 @@
     state.scale = Math.max(0.001, state.scale * factor);
     state.ox = cx - wx * state.scale;
     state.oy = cy + wy * state.scale;
-    render();
+    requestRender();
   }, { passive: false });
 
   // ---------- toolbar ----------
@@ -1685,6 +1719,7 @@
 
   function translateEntity(g, dx, dy) {
     if (!g) return;
+    delete g._box; // bounds change with the move — recomputed on next use
     if (g.type === 'line') { g.x1 += dx; g.y1 += dy; g.x2 += dx; g.y2 += dy; }
     else if (g.type === 'polyline') { (g.points || []).forEach(function (p) { p[0] += dx; p[1] += dy; }); }
     else if (g.type === 'circle') { g.cx += dx; g.cy += dy; }
@@ -2229,7 +2264,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.6.6', code: 22 };
+  var APP_VERSION = { version: '1.6.7', code: 23 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2292,6 +2327,7 @@
     loadDoc: loadDoc, render: render, saveMarkups: saveMarkups, loadMarkups: loadMarkups,
     togglePlayback: togglePlayback, openImageViewer: openImageViewer,
     startRecordingAt: startRecordingAt, setMeasureUnit: setMeasureUnit,
-    checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex
+    checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex,
+    entityBounds: entityBounds, isTooSmall: isTooSmall, requestRender: requestRender
   };
 })();
