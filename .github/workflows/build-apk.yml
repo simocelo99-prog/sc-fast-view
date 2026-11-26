@@ -29,15 +29,11 @@ jobs:
         run: npm ci
 
       - name: Sync Capacitor Android
-        run: |
-          # Small APK: keep the DWG engine OUT of the APK (it is ~8 MB).
-          # The app loads it from its own storage (cached by v1.4.0) or
-          # downloads it once from the release. Save a copy first for the
-          # release asset below.
-          cp www/libredwg/libredwg-web.wasm libredwg-web.wasm
-          rm www/libredwg/libredwg-web.wasm
-          npx cap sync android
-          rm -f android/app/src/main/assets/public/libredwg/libredwg-web.wasm
+        # NOTE (v1.4.2): the DWG engine MUST stay bundled in the APK.
+        # v1.4.1 removed it to make the APK small, but then the app had to
+        # download the 8 MB engine on first DWG open — on a slow connection
+        # that download fails and DWG files stop opening. Reliability wins.
+        run: npx cap sync android
 
       - name: Build debug APK
         run: cd android && ./gradlew assembleDebug
@@ -57,7 +53,8 @@ jobs:
           VER=$(jq -r .version www/version.json)
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           cp "$APK" SC-Fast-View.apk
-          # The engine was saved before the sync step (it is not in www/
-          # anymore, so the APK stays small). It ships as its own asset.
+          # Ship the DWG engine as its own asset too (keeps the download
+          # fallback in dwg.js working if the cache ever misses).
+          cp www/libredwg/libredwg-web.wasm libredwg-web.wasm
           gh release create "v$CODE" --title "SC Fast View v$VER" --notes "تحديث تلقائي — حمّل SC-Fast-View.apk وثبّته من موبايلك." SC-Fast-View.apk libredwg-web.wasm \
             || gh release upload "v$CODE" SC-Fast-View.apk libredwg-web.wasm --clobber
