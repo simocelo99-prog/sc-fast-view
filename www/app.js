@@ -244,21 +244,26 @@
     return { minX: rx0, minY: ry0, maxX: rx1, maxY: ry1 };
   }
 
-  // Saved view from the DWG file (*Active VPORT): the framing AutoCAD had
-  // when the file was saved. It is only a fallback now — on this file it is
-  // a 971-unit window inside 38.6M-unit bounds, a zoomed-in detail of the
-  // cable tangle, not the plan. fitView trusts it only when it frames a
-  // substantial part of the percentile-fit region (see fitView below).
-  function savedViewBounds() {
+  // Opening view: the site-plan area around the DWG's saved view
+  // (*Active VPORT). The saved view IS the plan on the real 29MB file:
+  // its 1904x3838 box holds 78% of the drawing's leaves (buildings,
+  // doors, walls) — the old "971-unit tangle window" model was wrong.
+  // But the saved box is portrait (aspect ~0.5) while the plan around
+  // it is wider than it is tall: DWG FastView shows the whole site plan
+  // at ~1.5:1. So frame the saved HEIGHT at a WIDE 1.5:1 aspect around
+  // the saved center — not the portrait saved box (which crops the
+  // roads/roundabouts) and not the percentile fit (2.8M x 3.3M, where
+  // the whole plan collapses below one screen pixel). Measured on the
+  // real file: the 1.5:1 box holds 86.8% of leaves, and widening it
+  // further (2x, 3x) or doubling its height adds nothing. Files with
+  // no saved view fall back to the whole-drawing fit.
+  function openingViewBounds() {
     var sv = state.doc && state.doc.savedView;
     if (!sv || !isFinite(sv.cx) || !isFinite(sv.cy) || !isFinite(sv.height) || !(sv.height > 0)) return null;
-    var r = canvas.parentElement.getBoundingClientRect();
-    var aspect = (sv.aspect && isFinite(sv.aspect) && sv.aspect > 0)
-      ? sv.aspect : (r.width > 2 && r.height > 2 ? r.width / r.height : 1);
-    var w = sv.height * aspect, h = sv.height;
+    var w = sv.height * 1.5, h = sv.height;
     var box = { minX: sv.cx - w / 2, maxX: sv.cx + w / 2, minY: sv.cy - h / 2, maxY: sv.cy + h / 2 };
     var b = state.doc.bounds;
-    // sanity: the saved view must overlap the drawing at all
+    // sanity: the opening view must overlap the drawing at all
     if (box.maxX < b.minX || box.minX > b.maxX || box.maxY < b.minY || box.minY > b.maxY) return null;
     return box;
   }
@@ -275,56 +280,57 @@
     });
     return n;
   }
+  // Whole-drawing fit (percentile, or full bounds when a substantial
+  // share of the drawing lies outside the percentile box). Used by the
+  // fit button and as the opening fallback for files with no saved view.
+  // The saved view deliberately does NOT participate here: the fit button
+  // frames the whole drawing.
+  function fullFitBounds() {
+    var fb = state.doc.bounds;
+    var b = fitBounds(); var kind = 'percentile';
+    // The percentile box frames where the bulk of the geometry is. Only
+    // fall back to the full bounds when a SUBSTANTIAL fraction of the
+    // drawing lies outside it — that is the sign the plan really is
+    // spread over the whole drawing. A handful of far-out entities
+    // must not drag the fit out to the inflated full bounds: on the
+    // cabinet file only 35 of 3730 entities lie outside the percentile
+    // box (0.9%), and framing the full 38.6M bounds makes the whole
+    // plan a tiny cluster (the tiny pass plots ~130 pixels there,
+    // still nearly blank). The earlier v1.7.1 rule used a tiny
+    // threshold (4 entities), so those 35 strays wrongly forced full
+    // bounds. The bulk of the plan — buildings and fiber zone — lives
+    // inside the percentile box; with the sub-pixel detail pass the
+    // buildings are visible there too.
+    var outside = countOutside(b);
+    state.fitOutside = outside;
+    var total = (state.doc.entities || []).length;
+    var need = Math.max(20, Math.floor(total * 0.10));
+    if (outside >= need) { b = fb; kind = 'full'; }
+    return { box: b, kind: kind };
+  }
+
   var fitViewRetries = 0;
-  function fitView() {
+  // mode 'open' (default): the opening view — the site-plan area around
+  // the saved view, or the whole-drawing fit when there is no saved view.
+  // mode 'full': the fit button — always the whole drawing
+  // (percentile/full). The two must stay separate: opening on the whole
+  // drawing is what hid the plan behind a sub-pixel overview on v1.7.5.
+  function fitView(mode) {
     if (!state.doc) return;
     var b, kind;
     if (settings.fitAll) {
       b = state.doc.bounds; kind = 'full';
     } else {
-      // The percentile fit finds the plan; the saved view is only a fallback.
-      // The saved view used to win unconditionally, and on this file it is
-      // a 971-unit window inside 38.6M-unit bounds (0.0036% of the drawing
-      // height) — a zoomed-in detail of the cable tangle, not the plan —
-      // so the app opened on the tangle while other viewers show the plan.
       // (A bound-less file — e.g. an empty DXF opened from another app —
       // has nothing to fit; leave the view alone.)
       var fb = state.doc.bounds;
       if (!fb || !isFinite(fb.minX) || !isFinite(fb.maxX) || !isFinite(fb.minY) || !isFinite(fb.maxY)) { state.fitKind = 'percentile'; return; }
-      b = fitBounds(); kind = 'percentile';
-      // The percentile box frames where the bulk of the geometry is. Only
-      // fall back to the full bounds when a SUBSTANTIAL fraction of the
-      // drawing lies outside it — that is the sign the plan really is
-      // spread over the whole drawing. A handful of far-out entities
-      // must not drag the fit out to the inflated full bounds: on the
-      // cabinet file only 35 of 3730 entities lie outside the percentile
-      // box (0.9%), and framing the full 38.6M bounds makes the whole
-      // plan a tiny cluster (the tiny pass plots ~130 pixels there,
-      // still nearly blank). The earlier v1.7.1 rule used a tiny
-      // threshold (4 entities), so those 35 strays wrongly forced full
-      // bounds. The bulk of the plan — buildings and fiber zone — lives
-      // inside the percentile box; with the sub-pixel detail pass the
-      // buildings are visible there too.
-      var outside = countOutside(b);
-      state.fitOutside = outside;
-      var total = (state.doc.entities || []).length;
-      var need = Math.max(20, Math.floor(total * 0.10));
-      if (outside >= need) {
-        b = fb; kind = 'full';
+      if (mode === 'full') {
+        var ff = fullFitBounds(); b = ff.box; kind = ff.kind;
       } else {
-        var cbArea = (b.maxX - b.minX) * (b.maxY - b.minY);
-        var sv = savedViewBounds();
-        if (sv) {
-          var svArea = (sv.maxX - sv.minX) * (sv.maxY - sv.minY);
-          var overlaps = !(sv.maxX < b.minX || sv.minX > b.maxX || sv.maxY < b.minY || sv.minY > b.maxY);
-          // Use the saved view only when it frames a substantial part of
-          // the percentile region (a tiny saved window is a detail view,
-          // not the plan). Otherwise the percentile box is the fit: when
-          // the content is spread out it already frames the whole plan
-          // (its corners are within the 1%-99% range), and when it is
-          // concentrated it frames the concentrated region.
-          if (overlaps && svArea >= cbArea * 0.25 && svArea <= cbArea * 4) { b = sv; kind = 'saved'; }
-        }
+        var sb = openingViewBounds();
+        if (sb) { b = sb; kind = 'site'; state.fitOutside = countOutside(b); }
+        else { var ff2 = fullFitBounds(); b = ff2.box; kind = ff2.kind; }
       }
     }
     state.fitKind = kind;
@@ -786,8 +792,15 @@
   }
   function drawTinyPixels(x0, y0, x1, y1) {
     if (!state.doc || !state.doc.entities) return;
-    // only at low zoom: zoomed in, the normal path draws the detail
-    if (state.scale * dpr >= 0.01) return;
+    // The opening (site-plan) view sits at scale*dpr ≈ 0.12 on a
+    // portrait phone and ≈ 0.22 in landscape — and the plan there is
+    // millions of sub-pixel entities the normal path skips, so the dots
+    // are what make the plan read as a drawing at all. Only stop above
+    // 0.3: zoomed in past that, the normal path draws the detail.
+    // (The old 0.01 gate predates the site-plan opening view: it only
+    // ever ran at the percentile/full overview, where it plotted ~150
+    // dots and the plan still looked empty.)
+    if (state.scale * dpr >= 0.3) return;
     // skip while a gesture is in progress (panning/pinching) — the fast
     // path draws, and the detail returns when the gesture ends
     if (typeof pointers !== 'undefined' && pointers.size > 0) return;
@@ -855,7 +868,7 @@
     var viewBroken = !isFinite(state.scale) || state.scale <= 0 ||
       (state.scale === 1 && state.ox === 0 && state.oy === 0);
     if (state.doc && fb2 && isFinite(fb2.minX) && isFinite(fb2.maxX) && isFinite(fb2.minY) && isFinite(fb2.maxY) && viewBroken) {
-      fitView();
+      fitView('open');
       if (isFinite(state.scale) && state.scale > 0) return;
     }
     colorCache = {};
@@ -950,7 +963,7 @@
     loadMarkups(name);
     requestAnimationFrame(function () {
       resize();
-      fitView();
+      fitView('open');
       if (opts.save !== false) {
         // Save the file to the library after the viewer is interactive,
         // so a big (multi-MB) write does not stall the first view.
@@ -1362,7 +1375,7 @@
       html += infoRow('أبعاد الرسمة', fmtNum(b.maxX - b.minX) + ' × ' + fmtNum(b.maxY - b.minY));
     }
     html += infoRow('العرض المحفوظ في الملف', doc.savedView ? 'موجود (ارتفاع ' + fmtNum(doc.savedView.height) + ')' : 'مفيش');
-    html += infoRow('الملاءمة المستخدمة', state.fitKind === 'saved' ? 'العرض المحفوظ' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أغلب الرسمة');
+    html += infoRow('الملاءمة المستخدمة', state.fitKind === 'site' ? 'منطقة المخطط' : state.fitKind === 'full' ? 'حدود الرسمة كلها' : 'أغلب الرسمة');
     if (state.fitBox && isFinite(state.fitBox.minX)) {
       html += infoRow('منطقة العرض', fmtNum(state.fitBox.maxX - state.fitBox.minX) + ' × ' + fmtNum(state.fitBox.maxY - state.fitBox.minY));
     }
@@ -1906,7 +1919,7 @@
     runSearch('');
     searchInputViewerEl.focus();
   });
-  document.getElementById('btnFit').addEventListener('click', fitView);
+  document.getElementById('btnFit').addEventListener('click', function () { fitView('full'); });
   document.getElementById('btnZoomIn').addEventListener('click', function () {
     var r = canvas.parentElement.getBoundingClientRect();
     var cx = r.width / 2, cy = r.height / 2;
@@ -2480,7 +2493,7 @@
   document.getElementById('optFitAll').addEventListener('change', function (ev) {
     settings.fitAll = ev.target.checked;
     saveSettings();
-    if (state.doc) fitView();
+    if (state.doc) fitView('full');
   });
   document.getElementById('btnTheme').addEventListener('click', function () {
     settings.bg = settings.bg === 'black' ? 'white' : settings.bg === 'white' ? 'beige' : 'black';
@@ -2494,7 +2507,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.5', code: 31 };
+  var APP_VERSION = { version: '1.7.6', code: 32 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
@@ -2560,6 +2573,6 @@
     checkIntentFile: checkIntentFile, loadDWG: loadDWG, ensureSearchIndex: ensureSearchIndex,
     entityBounds: entityBounds, isTooSmall: isTooSmall, requestRender: requestRender,
     showFileInfo: showFileInfo, closeInfoSheet: closeInfoSheet, buildInfoSheet: buildInfoSheet,
-    drawTinyPixels: drawTinyPixels, cssToRgb: cssToRgb
+    drawTinyPixels: drawTinyPixels, cssToRgb: cssToRgb, fitView: fitView
   };
 })();
