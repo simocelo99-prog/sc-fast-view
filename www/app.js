@@ -431,12 +431,39 @@
   // non-corridor layer exceeds 1000 units in this window). Only at
   // overview zooms (scale*dpr < 1.5): zoomed in, the same outlines are
   // real geometry the user is inspecting, so they are drawn.
+  // Overview detail filter: at the opening zoom (scale*dpr < 1.5) skip
+  // big loops whose outline reads as a scribble, per layer family.
+  // Everything returns when the user zooms in (scale*dpr >= 1.5), so
+  // no geometry is lost — this only declutters the overview.
+  // Thresholds were measured on the 29.18 MB Cabinet file (v1.7.8):
+  //  - 50 on the landscape/parking "arc" layers: 59 leaves >= 50u
+  //    (zero 1347u, parking prototype surface 790u, c.l 769u,
+  //    A-LANDSCAPE 584u, layer 0 527u, LH-HARD 474u, H-Parking 314u,
+  //    BORDERS 302u) are the roundabout knot itself; the <50u leaves
+  //    on the same layers draw the readable complex detail.
+  //  - 100 on the fibre layers (MICRODUCT / CAT 6A / CABLE): the
+  //    50-100u drops are the confined fibre band DWG FastView shows;
+  //    the 100-3000u rings are the web.
+  //  - 300 on the road-corridor layers (sidewalk, parking, median,
+  //    XL, EDGE-B1): keeps the road detail, drops the 300u+ loops.
+  // Layer names are matched on the SHORT name (after the last $0$),
+  // because nested-block leaves carry XR-...$0$... prefixes — matching
+  // the full name misses 'New sidewalk' ('sidewalk' has no space).
+  function shortLayerName(n) {
+    var s = String(n || '');
+    var i = s.lastIndexOf('$0$');
+    return i >= 0 ? s.slice(i + 3) : s;
+  }
   function isGiantLoop(g) {
     if (!g || (g.type !== 'polyline' && g.type !== 'line')) return false;
     if (state.scale * dpr >= 1.5) return false;
     var b = entityBounds(g);
     if (!b) return false;
     var maxDim = Math.max(b.maxX - b.minX, b.maxY - b.minY);
+    var sh = shortLayerName(g.layer);
+    if (/^(zero|A-LANDSCAPE|parking prototype surface|c\.l|LH-HARD|H-Parking|BORDERS|0)$/.test(sh)) return maxDim > 50;
+    if (/MICRODUCT|CAT 6A|CABLE/i.test(sh)) return maxDim > 100;
+    if (/side walk|sidewalk|parking|median|\bXL\b|EDGE-B1/i.test(sh)) return maxDim > 300;
     return maxDim > 3000;
   }
 
@@ -975,38 +1002,15 @@
     (doc.layers || []).forEach(function (layer) {
       if (layer.frozen || layer.off) state.hiddenLayers[layer.name] = true;
     });
-    // Road-corridor clutter: on a fibre/smart-network overlay the
-    // parking-area, sidewalk, road-edge and median layers draw
-    // thousands of short segments along the same big curves, which
-    // stack into the scribbled web at the opening zoom — DWG
-    // FastView's clean plan shows the roads and villa rows without
-    // them. The roads themselves live on other layers, and the fibre
-    // (microduct) layers are NOT hidden here — only their giant rings
-    // are caught by the size filter, so the thin fibre routes stay.
-    // The user can re-enable any of these from the layers panel.
-    var corridorLayers = {
-      'parking stalls': true, 'parking stalls_street': true,
-      'XL': true, '- ICE-RD-Des. EDGE-B1': true, '- side walk': true,
-      'New sidewalk': true, 'side walk new': true, 'parking lots': true,
-      'median': true, 'a-parking': true,
-      // Fibre (microduct) layers: their ducts are drawn as many short
-      // segments along big circular routes, so no size or shape filter
-      // can separate the ring arcs (the web) from the fibre drops
-      // between villas — they share layers, sizes and locations. DWG
-      // FastView's clean plan shows the roads and villas without the
-      // arcs, so these start hidden too; the user can re-enable the
-      // fibre from the layers panel when they want it.
-      '00-MICRODUCT 1W-7x3.5-panel 08': true, 'microduct 12W 7-3.5': true,
-      'microduct 24W 7-3.5': true, '00-MICRODUCT 12W-7x3.5': true,
-      '00-MICRODUCT 24W-7x3.5': true,
-      // CAT6A cable layers (magenta): big cable-route circles that
-      // sweep across the plan — the same ring-arc clutter as the
-      // microduct, on their own layers.
-      '00-BTC-CAT 6A CABLE': true, 'CAT6A CABLE': true
-    };
+    // The road-corridor / fibre layers are NOT hidden any more (v1.7.8):
+    // their big loops are caught by the isGiantLoop size filter instead,
+    // so the roads, villa clusters and the confined fibre band stay
+    // visible at the opening. Only the frozen/off layers (above) and
+    // the Boundary outline stay hidden at load; the user can re-enable
+    // any layer from the layers panel.
     (doc.layers || []).forEach(function (layer) {
       var short = String(layer.name || '').split('$0$').pop();
-      if (corridorLayers[short]) state.hiddenLayers[layer.name] = true;
+      if (short === 'Boundary') state.hiddenLayers[layer.name] = true;
     });
     state.measurePts = [];
     state.measureTotal = 0;
@@ -2596,7 +2600,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.7', code: 33 };
+  var APP_VERSION = { version: '1.7.8', code: 34 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
