@@ -522,16 +522,22 @@
     layerEntries.forEach(function (l) {
       var layer = {
         name: String(l.name || '0'),
-        color: (l.colorIndex === undefined || l.colorIndex === null) ? 7 : l.colorIndex
+        color: (l.colorIndex === undefined || l.colorIndex === null) ? 7 : l.colorIndex,
+        // Frozen/off layers are not drawn by DWG FastView (Axes,
+        // V-NODE, Defpoints...). Store the flags so app.js can start
+        // them hidden instead of drawing ~5,350 entities the reference
+        // viewer hides.
+        frozen: !!l.frozen,
+        off: !!l.off
       };
       layers.push(layer);
       layerMap[layer.name] = layer;
     });
     if (!layers.length) {
-      layers.push({ name: '0', color: 7 });
+      layers.push({ name: '0', color: 7, frozen: false, off: false });
       layerMap['0'] = layers[0];
     }
-    if (!layerMap['0']) layerMap['0'] = { name: '0', color: 7 };
+    if (!layerMap['0']) layerMap['0'] = { name: '0', color: 7, frozen: false, off: false };
 
     var blocks = {};
     var blockEntries = (db.tables && db.tables.BLOCK_RECORD && db.tables.BLOCK_RECORD.entries) || [];

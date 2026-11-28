@@ -21,6 +21,11 @@
   try {
     var saved = JSON.parse(localStorage.getItem('scfv-settings') || '{}');
     if (saved.bg) settings.bg = saved.bg;
+    // v1.7.7: the viewer opens on black like DWG FastView. A stored
+    // 'beige' (cream) came from the pre-1.4 default, not from a choice
+    // the user made — reset it once. Picking beige/white in Settings
+    // afterwards still sticks (the choice is recorded as bgChosen).
+    if (settings.bg === 'beige' && !saved.bgChosen) settings.bg = 'black';
     if (typeof saved.lineweight === 'boolean') settings.lineweight = saved.lineweight;
     if (typeof saved.fastRender === 'boolean') settings.fastRender = saved.fastRender;
     if (typeof saved.fitAll === 'boolean') settings.fitAll = saved.fitAll;
@@ -83,7 +88,20 @@
   }
   function fgColor() { return isDarkBg() ? '#FFFFFF' : '#000000'; }
   function gridColor() { return isDarkBg() ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'; }
-  function lineWidth() { return (settings.lineweight ? 2.4 : 1.1) * dpr; }
+  function lineWidth() {
+    var w = (settings.lineweight ? 2.4 : 1.1) * dpr;
+    // At overview zoom the drawing is dense: 1.1*dpr (~2.9 device px)
+    // swamps the plan — the giant loops read as thick scribble while
+    // DWG FastView draws ~1 device px lines. Cap the width at 1 device
+    // px while zoomed out. The opening view on the 29.18MB file sits at
+    // scale*dpr ≈ 0.52 (portrait) to ≈ 1.02 (landscape), so the cap
+    // must cover up to 1.5 — the 0.3 threshold from the old diagnosis
+    // was calibrated to the old file's 5.7k opening box (0.12–0.22) and
+    // would leave the new opening at 2.9px. Zoomed in past 1.5, full
+    // width returns.
+    if (state.scale * dpr < 1.5) w = Math.min(w, 1);
+    return w;
+  }
 
   function resize() {
     var r = canvas.parentElement.getBoundingClientRect();
@@ -244,23 +262,21 @@
     return { minX: rx0, minY: ry0, maxX: rx1, maxY: ry1 };
   }
 
-  // Opening view: the site-plan area around the DWG's saved view
-  // (*Active VPORT). The saved view IS the plan on the real 29MB file:
-  // its 1904x3838 box holds 78% of the drawing's leaves (buildings,
-  // doors, walls) — the old "971-unit tangle window" model was wrong.
-  // But the saved box is portrait (aspect ~0.5) while the plan around
-  // it is wider than it is tall: DWG FastView shows the whole site plan
-  // at ~1.5:1. So frame the saved HEIGHT at a WIDE 1.5:1 aspect around
-  // the saved center — not the portrait saved box (which crops the
-  // roads/roundabouts) and not the percentile fit (2.8M x 3.3M, where
-  // the whole plan collapses below one screen pixel). Measured on the
-  // real file: the 1.5:1 box holds 86.8% of leaves, and widening it
-  // further (2x, 3x) or doubling its height adds nothing. Files with
-  // no saved view fall back to the whole-drawing fit.
+  // Opening view: the DWG's saved view (*Active VPORT) itself. That is
+  // the framing DWG FastView opens on: on the 29.18MB Cabinet file the
+  // saved view is a WIDE 1904x971 box (aspect 1.96) around the site
+  // centre (701148, 823314) — the plan filling the screen, roads on
+  // top, villa rows, fibre band at the bottom. The old 26.83MB copy
+  // stored a 1904x3838 PORTRAIT saved view, which is why v1.7.6 forced
+  // a 1.5:1 box around the saved height — that guess cropped the plan's
+  // sides on this file. Use the saved view's own aspect (fall back to
+  // 1.5 when the file stores none). Files with no saved view fall back
+  // to the whole-drawing fit.
   function openingViewBounds() {
     var sv = state.doc && state.doc.savedView;
     if (!sv || !isFinite(sv.cx) || !isFinite(sv.cy) || !isFinite(sv.height) || !(sv.height > 0)) return null;
-    var w = sv.height * 1.5, h = sv.height;
+    var aspect = (isFinite(sv.aspect) && sv.aspect > 0) ? sv.aspect : 1.5;
+    var w = sv.height * aspect, h = sv.height;
     var box = { minX: sv.cx - w / 2, maxX: sv.cx + w / 2, minY: sv.cy - h / 2, maxY: sv.cy + h / 2 };
     var b = state.doc.bounds;
     // sanity: the opening view must overlap the drawing at all
@@ -318,7 +334,14 @@
   function fitView(mode) {
     if (!state.doc) return;
     var b, kind;
-    if (settings.fitAll) {
+    // fitAll (the "ملاءمة للرسم كامل" toggle) affects ONLY the fit
+    // button (mode 'full'): it forces the full document bounds instead
+    // of the percentile fit. It must NEVER touch the opening view —
+    // v1.7.6 checked fitAll before the mode, so with fitAll ON the
+    // opening bypassed the site view entirely and framed the inflated
+    // 38.6M bounds (the 01:31 field report: white screen with fitAll
+    // ON, drawing appeared the moment fitAll was turned OFF).
+    if (mode === 'full' && settings.fitAll) {
       b = state.doc.bounds; kind = 'full';
     } else {
       // (A bound-less file — e.g. an empty DXF opened from another app —
@@ -399,6 +422,24 @@
     return (b.maxX - b.minX) < t && (b.maxY - b.minY) < t;
   }
 
+  // True for a site-scale loop/outline (parking-area and sidewalk
+  // perimeters, microduct rings, road-corridor polylines — thousands of
+  // units across) that crosses the opening view as a nearly-straight
+  // line. At the opening zoom dozens of them stack into the scribbled
+  // web DWG FastView's clean plan does not show, while the roads and
+  // villa rows are drawn by shorter polylines (no open polyline on a
+  // non-corridor layer exceeds 1000 units in this window). Only at
+  // overview zooms (scale*dpr < 1.5): zoomed in, the same outlines are
+  // real geometry the user is inspecting, so they are drawn.
+  function isGiantLoop(g) {
+    if (!g || (g.type !== 'polyline' && g.type !== 'line')) return false;
+    if (state.scale * dpr >= 1.5) return false;
+    var b = entityBounds(g);
+    if (!b) return false;
+    var maxDim = Math.max(b.maxX - b.minX, b.maxY - b.minY);
+    return maxDim > 3000;
+  }
+
   // ---------- drawing ----------
   function drawEntity(g) {
     if (!g || g._deleted) return;
@@ -409,6 +450,7 @@
     }
     if (state.hiddenLayers[g.layer]) return;
     if (isTooSmall(g)) return;
+    if (isGiantLoop(g)) return;
     ctx.strokeStyle = resolveColor(g);
     ctx.fillStyle = resolveColor(g);
     ctx.lineWidth = lineWidth();
@@ -792,15 +834,15 @@
   }
   function drawTinyPixels(x0, y0, x1, y1) {
     if (!state.doc || !state.doc.entities) return;
-    // The opening (site-plan) view sits at scale*dpr ≈ 0.12 on a
-    // portrait phone and ≈ 0.22 in landscape — and the plan there is
-    // millions of sub-pixel entities the normal path skips, so the dots
-    // are what make the plan read as a drawing at all. Only stop above
-    // 0.3: zoomed in past that, the normal path draws the detail.
-    // (The old 0.01 gate predates the site-plan opening view: it only
-    // ever ran at the percentile/full overview, where it plotted ~150
-    // dots and the plan still looked empty.)
-    if (state.scale * dpr >= 0.3) return;
+    // The opening (site-plan) view sits at scale*dpr ≈ 0.52 on a
+    // portrait phone and ≈ 1.02 in landscape on the 29.18MB file —
+    // and the plan there is millions of sub-pixel entities the normal
+    // path skips, so the dots are what make the villas read as
+    // drawings at all instead of empty outlines. Only stop above 1.5:
+    // zoomed in past that, the normal path draws the detail itself.
+    // (The old 0.3 gate predates the wide saved-view opening: at 0.52
+    // the dots never ran, so the villas rendered as empty boxes.)
+    if (state.scale * dpr >= 1.5) return;
     // skip while a gesture is in progress (panning/pinching) — the fast
     // path draws, and the detail returns when the gesture ends
     if (typeof pointers !== 'undefined' && pointers.size > 0) return;
@@ -836,7 +878,12 @@
     state.doc.entities.forEach(plot);
     if (!pixels.size) return;
     // draw the dots, batched by color (one fillStyle per color).
-    // 2x2 device px so a dot stays visible on high-dpr phones.
+    // 1 device px at the opening zoom (scale*dpr >= 0.3): 2x2 dots
+    // merge into solid grey blobs where the villas are dense, while
+    // DWG FastView shows them as fine textured outlines. Keep 2x2
+    // only far out, where the dots are sparse and need the extra size
+    // to be seen at all.
+    var dot = (state.scale * dpr >= 0.3) ? 1 : 2;
     var byColor = new Map();
     pixels.forEach(function (rgb, key) {
       var k = rgb[0] + ',' + rgb[1] + ',' + rgb[2];
@@ -849,7 +896,7 @@
       ctx.fillStyle = 'rgb(' + p[0] + ',' + p[1] + ',' + p[2] + ')';
       for (var i = 0; i < arr.length; i++) {
         var key = arr[i];
-        ctx.fillRect(key % cw, (key / cw) | 0, 2, 2);
+        ctx.fillRect(key % cw, (key / cw) | 0, dot, dot);
       }
     });
   }
@@ -921,6 +968,46 @@
     // culling and the sub-pixel skip are O(1) instead of re-scanning points.
     (doc.entities || []).forEach(function (g) { entityBounds(g); });
     state.hiddenLayers = {};
+    // DWG FastView does not draw frozen/off layers (Axes, V-NODE,
+    // Defpoints, "power of smart" — ~5,350 entities on the Cabinet
+    // file). Start them hidden, like the file says; the user can
+    // re-enable any of them from the layers panel.
+    (doc.layers || []).forEach(function (layer) {
+      if (layer.frozen || layer.off) state.hiddenLayers[layer.name] = true;
+    });
+    // Road-corridor clutter: on a fibre/smart-network overlay the
+    // parking-area, sidewalk, road-edge and median layers draw
+    // thousands of short segments along the same big curves, which
+    // stack into the scribbled web at the opening zoom — DWG
+    // FastView's clean plan shows the roads and villa rows without
+    // them. The roads themselves live on other layers, and the fibre
+    // (microduct) layers are NOT hidden here — only their giant rings
+    // are caught by the size filter, so the thin fibre routes stay.
+    // The user can re-enable any of these from the layers panel.
+    var corridorLayers = {
+      'parking stalls': true, 'parking stalls_street': true,
+      'XL': true, '- ICE-RD-Des. EDGE-B1': true, '- side walk': true,
+      'New sidewalk': true, 'side walk new': true, 'parking lots': true,
+      'median': true, 'a-parking': true,
+      // Fibre (microduct) layers: their ducts are drawn as many short
+      // segments along big circular routes, so no size or shape filter
+      // can separate the ring arcs (the web) from the fibre drops
+      // between villas — they share layers, sizes and locations. DWG
+      // FastView's clean plan shows the roads and villas without the
+      // arcs, so these start hidden too; the user can re-enable the
+      // fibre from the layers panel when they want it.
+      '00-MICRODUCT 1W-7x3.5-panel 08': true, 'microduct 12W 7-3.5': true,
+      'microduct 24W 7-3.5': true, '00-MICRODUCT 12W-7x3.5': true,
+      '00-MICRODUCT 24W-7x3.5': true,
+      // CAT6A cable layers (magenta): big cable-route circles that
+      // sweep across the plan — the same ring-arc clutter as the
+      // microduct, on their own layers.
+      '00-BTC-CAT 6A CABLE': true, 'CAT6A CABLE': true
+    };
+    (doc.layers || []).forEach(function (layer) {
+      var short = String(layer.name || '').split('$0$').pop();
+      if (corridorLayers[short]) state.hiddenLayers[layer.name] = true;
+    });
     state.measurePts = [];
     state.measureTotal = 0;
     state.selected = null;
@@ -2474,6 +2561,7 @@
   document.querySelectorAll('#bgChoices .bg-choice').forEach(function (b) {
     b.addEventListener('click', function () {
       settings.bg = b.getAttribute('data-bg');
+      settings.bgChosen = true;
       saveSettings();
       applySettingsUI();
       if (state.doc) buildLayersPanel();
@@ -2497,6 +2585,7 @@
   });
   document.getElementById('btnTheme').addEventListener('click', function () {
     settings.bg = settings.bg === 'black' ? 'white' : settings.bg === 'white' ? 'beige' : 'black';
+    settings.bgChosen = true;
     saveSettings();
     applySettingsUI();
     if (state.doc) buildLayersPanel();
@@ -2507,7 +2596,7 @@
   // The app checks GitHub Releases for a newer version and offers a one-tap
   // download from inside the app. The repo must be public for the check to
   // work without a login. Keep APP_VERSION in sync with www/version.json.
-  var APP_VERSION = { version: '1.7.6', code: 32 };
+  var APP_VERSION = { version: '1.7.7', code: 33 };
   var UPDATE_API = 'https://api.github.com/repos/simocelo99-prog/sc-fast-view/releases/latest';
   var pendingUpdateUrl = '';
 
